@@ -48,6 +48,16 @@ pub async fn dispatch_builtin(name: &str, args: &Value, allowed_dirs: &[String],
 // ── Sandbox check ─────────────────────────────────────────────────────────────
 
 pub(crate) fn check_path(path: &str, allowed_dirs: &[String]) -> Result<(), String> {
+    // /work/* is the run_python (Pyodide) virtual filesystem — NOT a real path the file tools can
+    // reach. It's where large tool results are staged. If the model tries list_files/read_file on
+    // it (a common confusion after an offload), redirect to run_python instead of "access denied".
+    if path == "/work" || path.starts_with("/work/") {
+        return Err(format!(
+            "'{path}' is inside the run_python sandbox — file tools (list_files, read_file, …) \
+             CANNOT access it. To use data staged at /work/data, call the run_python tool and read \
+             it with Python, e.g. `import json; data = json.load(open('{path}'))`."
+        ));
+    }
     if allowed_dirs.is_empty() {
         return Ok(());
     }

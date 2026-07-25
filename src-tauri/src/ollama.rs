@@ -669,7 +669,7 @@ fn offload_tool_result(result: String, tool_name: &str, limit: usize, dir: &std:
         // The offloaded file is staged into the run_python sandbox at /work/data (see
         // stage_python_files), so the model reads it there with normal Python.
         Ok(_) => format!(
-            "{head}\n…[truncated — showing the first {limit} of {total} characters. The FULL result is available to the run_python tool at /work/data/{fname}. To use ALL of it (count/aggregate/filter/sort), call run_python and read it with normal Python:\nimport json\nwith open('/work/data/{fname}') as f:\n    raw = json.load(f)\n# `raw` may be a bare list, or a dict wrapping the list (e.g. {{\"records\": [...]}}); find the list, process it, then print() your result. Pandas also works: pd.read_json('/work/data/{fname}').]"
+            "{head}\n…[truncated — showing the first {limit} of {total} characters. The FULL result is available ONLY to the run_python tool at /work/data/{fname} — do NOT use list_files or read_file on /work/data (file tools cannot see it). To use ALL of it (count/aggregate/filter/sort/list), call run_python and read it with normal Python:\nimport json\nwith open('/work/data/{fname}') as f:\n    raw = json.load(f)\n# `raw` may be a bare list, or a dict wrapping the list (e.g. {{\"records\": [...]}}); find the list, process it, then print() your result. Pandas also works: pd.read_json('/work/data/{fname}').]"
         ),
         // File write failed → behave exactly like plain truncation.
         Err(_) => format!("{head}\n…[truncated: {total} chars total]"),

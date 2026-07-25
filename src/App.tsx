@@ -45,6 +45,7 @@ interface ChatMessage {
   ui?: ToolUi;               // MCP-App interactive UI to render in a sandboxed iframe
   toolImages?: string[];     // base64 data: image URLs from a tool result (e.g. a Mapbox map)
   artifact?: { title: string; html: string }; // model-authored HTML artifact (create_artifact)
+  savePrompt?: string[];     // run_python output files awaiting a folder — rendered with a Save button
 }
 
 // MCP servers approved to render/interact with apps this session (frontend mirror
@@ -905,7 +906,7 @@ export function McpAppFrame({ ui, toolName, onSend }: { ui: ToolUi; toolName: st
             post({ jsonrpc: "2.0", id, result: {
               protocolVersion: "2026-01-26",
               hostCapabilities: {},
-              hostInfo: { name: "LexiChat", version: "2.0.12" },
+              hostInfo: { name: "LexiChat", version: "2.1.0" },
               hostContext: {
                 toolInfo: {
                   id: "1",
@@ -1175,6 +1176,20 @@ export default function App() {
     }
   };
 
+  // Save stashed run_python output file(s) when the user clicks the Save button on the notice.
+  const saveOutputFiles = async (noticeId: string) => {
+    const dir = await open({ directory: true, title: "Choose a folder to save the output file(s)" }).catch(() => null);
+    if (!dir || typeof dir !== "string") return;
+    try {
+      const saved = await invoke<string[]>("save_pending_outputs", { dir });
+      setMessages(prev => prev.map(m => m.id === noticeId
+        ? { ...m, text: `Saved to ${dir} (added to the sandbox): ${saved.join(", ")}`, savePrompt: undefined }
+        : m));
+    } catch (err) {
+      setMessages(prev => [...prev, { id: uid(), role: "error", text: `Could not save: ${String(err)}` }]);
+    }
+  };
+
   // Faithful PDF: open the styled report in the browser, where Print → Save as PDF is exact.
   const printReport = async () => {
     if (!reportPreview) return;
@@ -1282,6 +1297,10 @@ export default function App() {
     invoke("stop_generation").catch(() => {});
     streamEpoch.current += 1;
     setIsRunning(false);
+    // Close any streaming "Thinking…" bubble so it can't persist after Stop, and drop an empty one.
+    setMessages(prev => prev
+      .map(m => (m.streaming ? { ...m, streaming: false, status: undefined } : m))
+      .filter(m => !(m.role === "assistant" && !m.streaming && !m.text && !(m.toolCalls?.length))));
   };
 
   // Auto-save the conversation when an agent run finishes (transition running→idle).
@@ -1550,20 +1569,14 @@ export default function App() {
     // run_python produced output files but no sandbox folder is configured to save them. Ask the
     // user to pick a folder — it's added to the sandbox and the stashed files are written there.
     // We never write outside the sandbox.
-    listen<{ files: string[] }>("sandbox-save-request", async e => {
+    // run_python produced output file(s) but no sandbox folder is set. Show a NON-blocking notice
+    // with a Save button (never a modal picker mid-chat); the files stay stashed until saved.
+    listen<{ files: string[] }>("sandbox-save-request", e => {
       const names = e.payload.files ?? [];
-      const dir = await open({
-        directory: true,
-        title: `Choose a folder to save ${names.length} file(s) and add it to the sandbox`,
-      }).catch(() => null);
-      if (!dir || typeof dir !== "string") return; // user cancelled → files discarded
-      try {
-        const saved = await invoke<string[]>("save_pending_outputs", { dir });
-        setMessages(prev => [...prev, { id: uid(), role: "notice",
-          text: `Saved to sandbox folder (now added to the sandbox): ${saved.join(", ")}` }]);
-      } catch (err) {
-        setMessages(prev => [...prev, { id: uid(), role: "error", text: `Could not save files: ${String(err)}` }]);
-      }
+      if (names.length === 0) return;
+      setMessages(prev => [...prev, { id: uid(), role: "notice",
+        text: `${names.length} output file(s) ready (${names.join(", ")}) — no sandbox folder set.`,
+        savePrompt: names }]);
     }).then(u => cleanup.push(u));
 
     // Persist refreshed OAuth2 access tokens so they survive restarts.
@@ -2058,7 +2071,14 @@ export default function App() {
                 />
               );
               if (msg.role === "error")       return <div key={msg.id} className="msg-error">⚠ {msg.text}</div>;
-              if (msg.role === "notice")      return <div key={msg.id} style={{ fontSize: 12, opacity: 0.6, fontStyle: "italic", padding: "4px 8px" }}>ℹ {msg.text}</div>;
+              if (msg.role === "notice")      return (
+                <div key={msg.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, opacity: 0.75, fontStyle: "italic", padding: "4px 8px" }}>
+                  <span>ℹ {msg.text}</span>
+                  {msg.savePrompt && (
+                    <button className="copy-btn" style={{ fontStyle: "normal" }} onClick={() => saveOutputFiles(msg.id)}>💾 Save…</button>
+                  )}
+                </div>
+              );
               return null;
             })}
             {isRunning && !messages.some(m => m.streaming) && (
@@ -2164,7 +2184,7 @@ export default function App() {
               Runs entirely on-device via Ollama. Reads files, searches the web,
               calls APIs, and keeps your data private.
             </p>
-            <div className="about-version">Version 2.0.12</div>
+            <div className="about-version">Version 2.1.0</div>
 
             <div className="about-support">
               <div className="about-support-label">Support the project</div>
