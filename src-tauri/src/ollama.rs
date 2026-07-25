@@ -1054,6 +1054,58 @@ async fn ensure_final_answer<R: tauri::Runtime>(
     }
 }
 
+/// Keep the per-step wire within `num_ctx` so the backend never truncates the FRONT of the prompt
+/// — which is the system prompt and the user's task. A long tool-heavy run accumulates large tool
+/// results; once the wire exceeds the context window Ollama silently drops the oldest messages and
+/// the model loses its instructions mid-run (observed: it loops or asks the user to restate). Rather
+/// than delete messages (which would orphan a tool result from its assistant tool-call and make the
+/// wire malformed), we shrink the CONTENT of the oldest tool results in place, oldest first, always
+/// protecting the system prompt, every user message, and the most recent messages. Token counts are
+/// a rough chars/4 estimate with generous headroom, so exact tokenisation isn't needed. Returns the
+/// number of tool results elided (for logging/tests).
+fn fit_wire_to_context(
+    wire: &mut [WireMessage],
+    tools: &[ToolSchema],
+    num_ctx: i32,
+    num_predict: Option<i32>,
+) -> usize {
+    if num_ctx <= 0 { return 0; }
+    let ctx = num_ctx as usize;
+    let tok = |s: &str| s.len() / 4;
+    // Reserve room for the model's reply plus slack for the chars/4 estimate and chat-template
+    // framing overhead, so we trim before we're actually at the edge.
+    let response_reserve = match num_predict { Some(n) if n > 0 => n as usize, _ => 4096 };
+    let budget = ctx.saturating_sub(response_reserve + ctx / 8);
+    let msg_tok = |m: &WireMessage| -> usize {
+        let mut t = 4; // per-message framing overhead
+        if let Some(c) = &m.content { t += tok(c); }
+        if let Some(tc) = &m.tool_calls {
+            t += serde_json::to_string(tc).map(|s| tok(&s)).unwrap_or(0);
+        }
+        t
+    };
+    let tools_tok = serde_json::to_string(tools).map(|s| tok(&s)).unwrap_or(0);
+    let mut total: usize = tools_tok + wire.iter().map(msg_tok).sum::<usize>();
+    if total <= budget { return 0; }
+
+    const KEEP_RECENT: usize = 6;
+    const PLACEHOLDER: &str =
+        "[earlier tool result omitted to keep within the context window — call the tool again if you still need this data]";
+    let cutoff = wire.len().saturating_sub(KEEP_RECENT);
+    let mut elided = 0usize;
+    for m in wire.iter_mut().take(cutoff) {
+        if total <= budget { break; }
+        if m.role != "tool" { continue; } // never touch system / user / assistant messages
+        let Some(c) = &m.content else { continue; };
+        if c.len() <= PLACEHOLDER.len() + 40 { continue; } // already small — not worth eliding
+        let before = tok(c);
+        m.content = Some(PLACEHOLDER.to_string());
+        total = total.saturating_sub(before.saturating_sub(tok(PLACEHOLDER)));
+        elided += 1;
+    }
+    elided
+}
+
 pub async fn agent_loop<R: tauri::Runtime>(
     backend: &Backend,
     model: &str,
@@ -1207,7 +1259,7 @@ pub async fn agent_loop<R: tauri::Runtime>(
         }
 
         // Build wire messages: system + history
-        let wire = {
+        let mut wire = {
             let conv = conversation.lock().unwrap();
             let mut w = vec![WireMessage {
                 role: "system".into(),
@@ -1220,6 +1272,19 @@ pub async fn agent_loop<R: tauri::Runtime>(
             w.extend(conv.clone());
             w
         };
+
+        // Keep the wire under num_ctx so the backend never truncates the system prompt / user task
+        // out from under a long tool-heavy run. Non-destructive: only shrinks this step's copy, the
+        // stored conversation keeps the full history.
+        if let Some(o) = options.as_ref() {
+            if let Some(ctx) = o.num_ctx {
+                let elided = fit_wire_to_context(&mut wire, &tools, ctx, o.num_predict);
+                if elided > 0 && !silent {
+                    let _ = app.emit("debug-context-trim",
+                        serde_json::json!({ "step": step, "elided": elided }));
+                }
+            }
+        }
 
         // The model must eval the whole prompt (history + tool schemas) before the first token
         // streams — silent time that grows with the conversation. Flag it as "Thinking…".
@@ -1961,6 +2026,62 @@ async fn dispatch_run_python<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn msg(role: &str, content: Option<&str>, name: Option<&str>) -> WireMessage {
+        WireMessage {
+            role: role.into(),
+            content: content.map(str::to_string),
+            tool_calls: None,
+            tool_call_id: None,
+            name: name.map(str::to_string),
+            images: None,
+        }
+    }
+
+    #[test]
+    fn fit_wire_to_context_elides_old_tool_results_protecting_system_user_and_recent() {
+        let big = "x".repeat(24_000); // ~6k tokens each
+        let mut wire = vec![
+            msg("system", Some("THE SYSTEM PROMPT WITH ALL THE RULES"), None),
+            msg("user", Some("Give me the census religion breakdown for Pelham ward"), None),
+        ];
+        // 8 tool-call / tool-result pairs — well over an 8k-ish budget.
+        for i in 0..8 {
+            let mut a = msg("assistant", None, None);
+            a.tool_calls = Some(vec![WireToolCall {
+                id: None,
+                function: WireToolFunction { name: format!("t{i}"), arguments: serde_json::json!({}) },
+            }]);
+            wire.push(a);
+            wire.push(msg("tool", Some(&big), Some(&format!("t{i}"))));
+        }
+
+        let tools: Vec<ToolSchema> = Vec::new();
+        let elided = fit_wire_to_context(&mut wire, &tools, 32768, None);
+        assert!(elided > 0, "expected some old tool results to be elided");
+
+        // System prompt and the original task are never touched.
+        assert_eq!(wire[0].content.as_deref(), Some("THE SYSTEM PROMPT WITH ALL THE RULES"));
+        assert_eq!(wire[1].content.as_deref(), Some("Give me the census religion breakdown for Pelham ward"));
+        // The most recent tool result (last message) is preserved verbatim.
+        assert_eq!(wire.last().unwrap().content.as_deref(), Some(big.as_str()));
+        // A second pass finds it already within budget — proving the first brought it under.
+        assert_eq!(fit_wire_to_context(&mut wire, &tools, 32768, None), 0);
+    }
+
+    #[test]
+    fn fit_wire_to_context_noop_when_within_budget_or_uncapped() {
+        let mut wire = vec![
+            msg("system", Some("short system"), None),
+            msg("user", Some("hi"), None),
+            msg("tool", Some("small result"), Some("t")),
+        ];
+        let tools: Vec<ToolSchema> = Vec::new();
+        assert_eq!(fit_wire_to_context(&mut wire, &tools, 32768, None), 0);
+        // num_ctx <= 0 means "no cap" — never trims regardless of size.
+        let mut big_wire = vec![msg("tool", Some(&"x".repeat(200_000)), Some("t"))];
+        assert_eq!(fit_wire_to_context(&mut big_wire, &tools, 0, None), 0);
+    }
 
     #[test]
     fn malformed_tool_call_errors_are_retryable() {
