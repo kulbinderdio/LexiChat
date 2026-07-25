@@ -539,12 +539,21 @@ async fn stream_chat<R: tauri::Runtime>(
     let mut buf = String::new();
     let mut stream = resp.bytes_stream();
 
-    while let Some(chunk) = stream.next().await {
-        // Stop pressed mid-generation — abandon the rest of the stream and return what
-        // we have. The agent loop's step-boundary check then ends the run.
+    loop {
+        // Check Stop before each read so it lands even during prompt-eval, when the model is busy
+        // and no chunks are arriving — a plain `stream.next().await` would block until the first
+        // token. On cancel we break and drop `resp`/`stream`, closing the connection, which tells
+        // the backend to abort generation rather than finish a reply we're about to discard.
         if let Some(c) = cancel {
             if c.load(std::sync::atomic::Ordering::SeqCst) { break; }
         }
+        let chunk = match tokio::time::timeout(
+            std::time::Duration::from_millis(200), stream.next()).await
+        {
+            Ok(Some(chunk)) => chunk,
+            Ok(None)        => break,    // stream ended normally
+            Err(_)          => continue, // read timed out → loop back and re-check the Stop flag
+        };
         // A mid-stream network error (e.g. "error decoding response body") should not
         // discard a response that's already been partially received — break and return
         // what we have rather than propagating the error.

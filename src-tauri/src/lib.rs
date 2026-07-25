@@ -564,6 +564,16 @@ fn respond_code_permission(approved: bool, state: State<'_, AppState>) -> Result
     Ok(())
 }
 
+/// Pre-unlock (or re-lock) code execution without a prompt. The frontend calls this at startup
+/// when the persisted "Always allow code execution" setting is on, so approved users skip the
+/// per-session approval dialog. Persistence lives in the frontend settings (localStorage); this
+/// just seeds the in-memory session flag the run_python gate reads.
+#[tauri::command]
+fn set_code_exec_unlocked(unlocked: bool, state: State<'_, AppState>) -> Result<(), String> {
+    *state.code_exec_unlocked.lock().unwrap() = unlocked;
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct PyOutFile { name: String, b64: String }
 
@@ -1943,6 +1953,7 @@ pub fn run() {
             remove_allowed_dir,
             set_allowed_dirs,
             respond_code_permission,
+            set_code_exec_unlocked,
             respond_python_result,
             save_pending_outputs,
             call_tool_from_code,

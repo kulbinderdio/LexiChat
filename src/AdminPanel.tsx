@@ -186,6 +186,9 @@ export interface AppSettings {
   chatParams?: ChatParams;
   allowedDirs?: string[];
   wikiEnabled?: boolean;
+  // When true, run_python skips the per-session approval prompt (persisted here; seeded into the
+  // Rust session flag at startup via set_code_exec_unlocked).
+  alwaysAllowCodeExec?: boolean;
   // Legacy fields kept for migration only — will be undefined after first load
   mcpServers?: StoredMCPServer[];
   openapiSpecs?: StoredOpenAPISpec[];
@@ -1002,6 +1005,21 @@ function ToolsTab({ settings, onChange }: { settings: AppSettings; onChange: (s:
             </div>
           </label>
         ))}
+        {toolEnabled(settings.enabledTools, "run_python") && (
+          <label className="admin-row" style={{ cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={settings.alwaysAllowCodeExec === true}
+              onChange={e => onChange({ ...settings, alwaysAllowCodeExec: e.target.checked })}
+              className="admin-checkbox"
+            />
+            <span className="tool-icon">🔓</span>
+            <div className="admin-row-text">
+              <span className="admin-row-title">Always allow code execution</span>
+              <span className="admin-row-sub">Skip the approval prompt before the first run_python each session. Only enable if you trust the models you run — code executes in the sandbox with access to your allowed folders.</span>
+            </div>
+          </label>
+        )}
       </section>
 
       <section className="admin-section">

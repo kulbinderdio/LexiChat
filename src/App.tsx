@@ -1252,6 +1252,13 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Seed the Rust code-exec session flag from the persisted "Always allow code execution" setting,
+  // so approved users skip the run_python approval prompt across restarts. Turning it off re-locks
+  // (the next run_python asks again). Fires at startup and whenever the setting is toggled.
+  useEffect(() => {
+    invoke("set_code_exec_unlocked", { unlocked: settings.alwaysAllowCodeExec === true }).catch(() => {});
+  }, [settings.alwaysAllowCodeExec]);
+
   // ── Chat history ──────────────────────────────────────────────────────────
   // Reload the per-profile conversation list. Re-runs on profile switch since it
   // depends on activeProfileId.
@@ -1751,14 +1758,23 @@ export default function App() {
       const now = new Date();
       const dateSuffix = `\n\nTODAY'S DATE is ${now.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })} (${now.toISOString().slice(0, 10)}). Use this whenever the user asks for the "latest", "recent", "current", "this month/year", "today", etc. — you already know today's date and do not need a tool for it. Be aware some data sources lag behind today (e.g. UK police street-crime data is usually 1–2 months old), so the "latest available" data may be for an earlier month than the current one — request the most recent month the source actually offers.`;
 
+      // Anti-hallucination for statistics: small tool tables (e.g. a single district's census
+      // religion breakdown, ~10 rows) stay inline, so the model tends to hand-map the categories
+      // and eyeball the percentages — which is where the wrong figures came from. When run_python
+      // and data tools are both available, require the arithmetic to be done in code from the tool's
+      // own JSON. Only add it when there's actually numeric data work to do.
+      const figuresRulesSuffix = (runPythonMaster && externalParts.length > 0)
+        ? "\n\nEXACT FIGURES: when a data tool returns numbers (counts, populations, census tables, prices) and you need totals, percentages or a breakdown from them, compute them in run_python — load the tool's JSON, use the category/label fields it returns verbatim (never rename or re-map categories yourself), find the 'Total' row and divide by it for percentages, then report those computed values. Do NOT mentally calculate or round percentages, and never supply a figure from prior knowledge: any number not present in THIS turn's tool output must be reported as \"No data available\", not estimated."
+        : "";
+
       // Code-mode: when the profile allows code to call tools, tell the model about the Python API.
       const codeToolsSuffix = (activeProfile?.allowCodeTools || forceAllowCodeToolsRef.current)
         ? "\n\nCODE-MODE TOOLS: inside run_python you can call registered tools directly. ALWAYS call `tools = await list_tools()` FIRST to get the EXACT tool names and their `parameters` schema — never guess a tool name or a group label. Each entry is {name, description, parameters}. Then `data = await call_tool(\"exact_tool_name\", {\"arg\": \"value\"})` runs one and returns a dict/list (parsed JSON) or string; build the args from the tool's parameters schema. Both are async — you MUST `await` them. Prefer this for multi-source work: fetch with call_tool, then compute/aggregate/plot with pandas/numpy/matplotlib in the same script, instead of many separate tool-call steps."
         : "";
 
       const systemPrompt = allowedDirs.length > 0
-        ? `${effectiveBase}${externalSuffix}${contextVarsSuffix}${wikiSuffix}${codeToolsSuffix}${outputRulesSuffix}${dateSuffix}\nThe user's configured folders are: ${allowedDirs.join(", ")}. Rules for file operations:\n- When reading or listing files without a specified path, use these folders immediately — do not ask for clarification.\n- When writing or saving a file without a specified path, save it to ${allowedDirs[0]} with a sensible filename derived from the content (e.g. sikhism_article.pdf). Never call write_file without a full absolute path.\n- Always use full absolute paths — never '.' or '~'.`
-        : `${effectiveBase}${externalSuffix}${contextVarsSuffix}${wikiSuffix}${codeToolsSuffix}${outputRulesSuffix}${dateSuffix}`;
+        ? `${effectiveBase}${externalSuffix}${contextVarsSuffix}${wikiSuffix}${codeToolsSuffix}${figuresRulesSuffix}${outputRulesSuffix}${dateSuffix}\nThe user's configured folders are: ${allowedDirs.join(", ")}. Rules for file operations:\n- When reading or listing files without a specified path, use these folders immediately — do not ask for clarification.\n- When writing or saving a file without a specified path, save it to ${allowedDirs[0]} with a sensible filename derived from the content (e.g. sikhism_article.pdf). Never call write_file without a full absolute path.\n- Always use full absolute paths — never '.' or '~'.`
+        : `${effectiveBase}${externalSuffix}${contextVarsSuffix}${wikiSuffix}${codeToolsSuffix}${figuresRulesSuffix}${outputRulesSuffix}${dateSuffix}`;
 
       // MCP servers this profile may use. With no active profile, none are enabled (conservative
       // default) — a profile must opt in. The backend filters strictly by this list.
@@ -2225,7 +2241,8 @@ export default function App() {
             <p className="about-desc">
               The assistant wants to execute this code in the sandbox. It can read and
               write files within your allowed folders and attached files. Approving will
-              allow code execution for the rest of this session.
+              allow code execution for the rest of this session — or choose “Always allow”
+              to skip this prompt on future runs.
             </p>
             <pre style={{
               background: "var(--code-bg, #1e1e1e)", color: "var(--code-fg, #e0e0e0)",
@@ -2237,6 +2254,11 @@ export default function App() {
                 invoke("respond_code_permission", { approved: false }).catch(() => {});
                 setPermissionRequest(null);
               }}>Deny</button>
+              <button className="btn" onClick={() => {
+                invoke("respond_code_permission", { approved: true }).catch(() => {});
+                setSettings(prev => { const upd = { ...prev, alwaysAllowCodeExec: true }; saveSettings(upd); return upd; });
+                setPermissionRequest(null);
+              }}>Always allow</button>
               <button className="btn primary" onClick={() => {
                 invoke("respond_code_permission", { approved: true }).catch(() => {});
                 setPermissionRequest(null);

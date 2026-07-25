@@ -47,7 +47,15 @@ export function resolveParams(p: ChatParams): {
   // the model use its own defaults so we never accidentally truncate tool schemas.
   const styleTemp: Record<ChatParams["style"], number | undefined> = { precise: 0.2, balanced: undefined, creative: 1.0 };
   const lengthTokens: Record<ChatParams["responseLength"], number | undefined> = { short: 256, medium: 1024, long: 4096, auto: undefined };
-  const ctxTokens: Record<ChatParams["contextSize"], number | undefined> = { short: undefined, long: 8192 };
+  // Cap the context window explicitly. "Standard" used to be `undefined` (= the model's native
+  // context), which on big-context models like qwen3.6 (262K) meant every reply span up a huge KV
+  // cache and hurt speed/memory. But capping too low is worse: an agentic run accumulates the
+  // system prompt + tool schemas + many tool results, and once the wire exceeds num_ctx Ollama
+  // truncates from the FRONT — dropping the system prompt and the user's question, so the model
+  // loses the task mid-run (observed at 16K: it looped geocoding then asked the user to restate).
+  // 32K survives a ~15-step tool-heavy run intact while still being 8× smaller than qwen3.6's
+  // native 262K; Extended (128K) gives headroom for the heaviest multi-source reports.
+  const ctxTokens: Record<ChatParams["contextSize"], number | undefined> = { short: 32768, long: 131072 };
   return {
     temperature: p.temperature ?? styleTemp[p.style],
     numCtx: p.numCtx ?? ctxTokens[p.contextSize],
@@ -114,7 +122,7 @@ export function AdvancedParamsContent({
   const set = <K extends keyof ChatParams>(k: K, v: ChatParams[K]) => onChange({ ...draft, [k]: v });
   const styleTemp: Record<ChatParams["style"], number | undefined> = { precise: 0.2, balanced: undefined, creative: 1.0 };
   const lengthTokens: Record<ChatParams["responseLength"], number | undefined> = { short: 256, medium: 1024, long: 4096, auto: undefined };
-  const ctxTokens: Record<ChatParams["contextSize"], number | undefined> = { short: undefined, long: 8192 };
+  const ctxTokens: Record<ChatParams["contextSize"], number | undefined> = { short: 32768, long: 131072 };
 
   const SliderRow = ({ label, tooltip, value, min, max, step, presetValue, onChg }: {
     label: string; tooltip?: string; value: number | undefined;
@@ -222,7 +230,7 @@ export function AdvancedParamsContent({
         draft.numCtx,
         ctxTokens[draft.contextSize] ? `preset: ${ctxTokens[draft.contextSize]}` : "model default",
         512, 131072, 512,
-        v => set("numCtx", v), "Larger values use more RAM — leave blank to use the Memory preset (or model default for Standard).")}
+        v => set("numCtx", v), "Larger values use more RAM — leave blank to use the Memory preset (Standard = 32K, Extended = 128K).")}
 
       {numInput("Max Output Tokens", "Maximum tokens in the model's response. -1 = unlimited.",
         draft.numPredict,
@@ -367,8 +375,8 @@ function SimpleParamsPopover({ params, onChange, onClose, onAdvanced, anchor }: 
         desc="How much conversation Lexi remembers — longer uses more RAM"
         value={params.contextSize}
         options={[
-          { value: "short", label: "Standard", desc: "2 048 tokens" },
-          { value: "long",  label: "Extended", desc: "8 192 tokens" },
+          { value: "short", label: "Standard", desc: "32K tokens — fast" },
+          { value: "long",  label: "Extended", desc: "128K tokens — heavy research, slower" },
         ]}
         onChange={v => set("contextSize", v)}
       />
