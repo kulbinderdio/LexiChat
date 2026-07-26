@@ -472,8 +472,9 @@ html, body, #root { height: 100%; overflow: hidden; }
 .tool-calls { display: flex; flex-direction: column; gap: 4px; }
 .tool-badge {
   display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
   padding: 5px 10px;
   background: var(--purple-bg);
   border: 1px solid var(--purple-border);
@@ -481,9 +482,20 @@ html, body, #root { height: 100%; overflow: hidden; }
   font-size: 11px;
   font-family: "SF Mono", "Fira Code", monospace;
 }
+.tool-badge-main { display: flex; align-items: center; gap: 6px; }
 .tool-badge-icon { color: var(--purple); font-size: 10px; }
 .tool-badge-name { color: var(--purple); font-weight: 600; }
 .tool-badge-args { color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 300px; }
+.tool-timer {
+  padding-left: 16px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  opacity: 0.6;
+}
+.tool-timer.running { color: var(--purple); opacity: 0.9; animation: tool-timer-pulse 1.2s ease-in-out infinite; }
+@keyframes tool-timer-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 0.95; } }
+@media (prefers-reduced-motion: reduce) { .tool-timer.running { animation: none; opacity: 0.8; } }
 
 /* Copy button */
 .copy-btn {

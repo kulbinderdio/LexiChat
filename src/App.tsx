@@ -19,7 +19,7 @@ import "./App.css";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-interface ToolCall { name: string; args: string; }
+interface ToolCall { name: string; args: string; startedAt?: number; durationMs?: number; }
 
 // MCP Apps (SEP-1865) UI payload attached to a tool result (see Rust ToolUiPayload).
 interface ToolUi {
@@ -94,7 +94,7 @@ const ALL_BUILTIN_TOOLS: ToolSchema[] = [
   { type: "function", function: { name: "compose_email", description: "Build a base64url-encoded RFC 2822 email ready for the Gmail API. Returns ONLY the raw base64url string — use the entire return value as the 'raw' field in gmail_sendmessage, with no modification.", parameters: { type: "object", properties: { to: { type: "string", description: "Recipient email address(es), comma-separated." }, from: { type: "string", description: "Sender email address (optional)." }, subject: { type: "string", description: "Email subject line." }, body: { type: "string", description: "Plain text email body." }, reply_to_message_id: { type: "string", description: "Message-ID to reply to, for threading (optional)." } }, required: ["to","subject","body"] } } },
   { type: "function", function: { name: "fetch_webpage", description: "Fetch and read the full text content of a webpage by URL. Strips HTML and returns readable text. This is the correct tool whenever the user wants to see, read, open, or show an article or page — including the full article behind a web_search result (pass that result's URL). Do NOT refuse such requests or claim you can only summarise; call this tool instead. Also use it to read any specific URL the user provides.", parameters: { type: "object", properties: { url: { type: "string", description: "Full URL to fetch, must start with http:// or https://" } }, required: ["url"] } } },
   { type: "function", function: { name: "get_current_datetime", description: "Get the current local date and time. Returns human-readable, ISO 8601, filename-safe, and Unix timestamp formats. Use whenever you need today's date or a timestamp for a filename.", parameters: { type: "object", properties: {}, required: [] } } },
-  { type: "function", function: { name: "run_python", description: "Execute real Python (CPython) in a secure, offline sandbox to compute, analyse data, and CREATE CHARTS. The full standard library plus numpy, pandas, matplotlib, scipy, sympy, openpyxl (read/write Excel .xlsx), and beautifulsoup4 (parse HTML) are available — import them normally. Use print() for text output. Files live in a virtual workspace at /work/uploads/: the user's attached files are there — documents (PDF, Word) are ALREADY extracted to plain text, so just open() and read them (do NOT try to PDF-parse); data files (CSV, Excel, JSON) are as-is for pandas. SAVE any output (files, charts) to /work/out/ (kept for the user). (For a plain read/summary of a document with no computation, prefer the read_file tool — no code or permission needed.) Use normal Python I/O — open(), pathlib, pd.read_csv('/work/uploads/data.csv'). TO SHOW A GRAPH, build a matplotlib figure (e.g. `import matplotlib.pyplot as plt; plt.plot(x, y)`) — it is rendered INLINE in the chat automatically — you do NOT need to save it (do NOT hand-draw ASCII or SVG). Only use plt.savefig('/work/out/name.png') if the user explicitly wants a saved file — /work/out is an in-memory scratch path, but anything you write there is copied to a real folder on the user's disk and the tool result reports that real absolute path. When telling the user where a file was saved, quote the real path from the tool result (the line marked SAVED TO DISK); NEVER tell the user the file is at /work/out (they cannot open that). No network access. Do not read/write paths outside /work.", parameters: { type: "object", properties: { code: { type: "string", description: "The Python source code to execute." } }, required: ["code"] } } },
+  { type: "function", function: { name: "run_python", description: "Execute real Python (CPython) in a secure, offline sandbox to compute, analyse data, and CREATE CHARTS. The full standard library plus numpy, pandas, matplotlib, scipy, sympy, openpyxl (read/write Excel .xlsx), beautifulsoup4 (parse HTML), and geopandas with shapely & pyproj (geospatial — plot points/lines/polygons and choropleth MAPS as a matplotlib figure; note there is no online street/satellite basemap offline, so for a street-map backdrop use a connected map tool instead) are available — import them normally. These are the ONLY third-party packages, and there is NO network access, so do not import anything else (e.g. requests, scikit-learn, plotly, contextily) — it will fail. Use print() for text output. Files live in a virtual workspace at /work/uploads/: the user's attached files are there — documents (PDF, Word) are ALREADY extracted to plain text, so just open() and read them (do NOT try to PDF-parse); data files (CSV, Excel, JSON) are as-is for pandas. SAVE any output (files, charts) to /work/out/ (kept for the user). (For a plain read/summary of a document with no computation, prefer the read_file tool — no code or permission needed.) Use normal Python I/O — open(), pathlib, pd.read_csv('/work/uploads/data.csv'). TO SHOW A GRAPH, build a matplotlib figure (e.g. `import matplotlib.pyplot as plt; plt.plot(x, y)`) — it is rendered INLINE in the chat automatically — you do NOT need to save it (do NOT hand-draw ASCII or SVG). Only use plt.savefig('/work/out/name.png') if the user explicitly wants a saved file — /work/out is an in-memory scratch path, but anything you write there is copied to a real folder on the user's disk and the tool result reports that real absolute path. When telling the user where a file was saved, quote the real path from the tool result (the line marked SAVED TO DISK); NEVER tell the user the file is at /work/out (they cannot open that). No network access. Do not read/write paths outside /work.", parameters: { type: "object", properties: { code: { type: "string", description: "The Python source code to execute." } }, required: ["code"] } } },
   { type: "function", function: { name: "create_artifact", description: "Render a rich, self-contained HTML page inline in the chat, with a Save button (saves as a .html file the user can open in any browser). Use this for polished deliverables — formatted reports, dashboards, styled tables/cards, or simple interactive views — when plain markdown isn't enough. The HTML MUST be fully self-contained: inline all CSS in a <style> tag and any JS in a <script> tag; NO external URLs, fonts, images, or CDNs (they are blocked). To include a chart, map or image you generated earlier THIS TURN (e.g. a matplotlib chart from run_python, or a map), use the placeholder token as the image source: <img src=\"{{figure:1}}\"> for the first such image, {{figure:2}} for the second, and so on (in the order they were created) — LexiChat substitutes the real image. Do NOT paste base64 image data yourself. Any other images must be data: URIs. It renders in a sandboxed frame. Do NOT put your final prose answer inside the artifact — write a short summary in chat and put the rich content in the artifact.", parameters: { type: "object", properties: { title: { type: "string", description: "Short title for the artifact (used as the saved filename and header)." }, html: { type: "string", description: "A complete, self-contained HTML document (or fragment) with all CSS/JS inlined and no external resources." } }, required: ["title", "html"] } } },
 ];
 
@@ -555,7 +555,44 @@ function substituteFigures(text: string, figs: string[], asMarkdown: boolean): {
   return { out, used };
 }
 
-function AssistantMessage({ msg, onExport }: { msg: ChatMessage; onExport?: (msgId: string) => void }) {
+function fmtDuration(ms: number): string {
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60000);
+  const s = Math.floor((ms % 60000) / 1000);
+  return `${m}m ${String(s).padStart(2, "0")}s`;
+}
+
+// Freeze any call still "running" (startedAt set, no durationMs) — used when a run ends or is
+// stopped, so a call interrupted mid-dispatch doesn't tick forever off a stale start time.
+function finalizeCallTimers(messages: ChatMessage[]): ChatMessage[] {
+  const now = Date.now();
+  let changed = false;
+  const out = messages.map(m => {
+    if (!m.toolCalls?.some(tc => tc.startedAt != null && tc.durationMs == null)) return m;
+    changed = true;
+    return { ...m, toolCalls: m.toolCalls.map(tc =>
+      tc.startedAt != null && tc.durationMs == null ? { ...tc, durationMs: now - tc.startedAt } : tc) };
+  });
+  return changed ? out : messages;
+}
+
+// Small per-call timer shown under each tool call: ticks live while the call is in flight
+// (startedAt set, no durationMs yet), then freezes to the final duration once its result arrives.
+// Only running timers re-render (on a 150ms interval); finished ones are static.
+function ToolTimer({ startedAt, durationMs }: { startedAt?: number; durationMs?: number }) {
+  const running = startedAt != null && durationMs == null;
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => tick(t => t + 1), 150);
+    return () => clearInterval(id);
+  }, [running]);
+  if (durationMs != null) return <span className="tool-timer">{fmtDuration(durationMs)}</span>;
+  if (running) return <span className="tool-timer running">⏱ {fmtDuration(Date.now() - startedAt!)}</span>;
+  return null;
+}
+
+function AssistantMessage({ msg, onExport, thinkingAt }: { msg: ChatMessage; onExport?: (msgId: string) => void; thinkingAt?: number | null }) {
   const showThinking = msg.streaming && !msg.text && (!msg.toolCalls || msg.toolCalls.length === 0);
   return (
     <div className="msg-assistant">
@@ -565,6 +602,7 @@ function AssistantMessage({ msg, onExport }: { msg: ChatMessage; onExport?: (msg
           <div className="thinking-row">
             <ThinkingDots />
             {msg.status && <span className="thinking-status">{msg.status}</span>}
+            <ToolTimer startedAt={thinkingAt ?? undefined} />
           </div>
         ) : msg.streaming ? (
           <div className="assistant-text">
@@ -584,9 +622,12 @@ function AssistantMessage({ msg, onExport }: { msg: ChatMessage; onExport?: (msg
           <div className="tool-calls">
             {msg.toolCalls.map((tc, i) => (
               <div key={i} className="tool-badge">
-                <span className="tool-badge-icon">⚡</span>
-                <span className="tool-badge-name">{tc.name}</span>
-                {tc.args && <span className="tool-badge-args">{tc.args}</span>}
+                <div className="tool-badge-main">
+                  <span className="tool-badge-icon">⚡</span>
+                  <span className="tool-badge-name">{tc.name}</span>
+                  {tc.args && <span className="tool-badge-args">{tc.args}</span>}
+                </div>
+                <ToolTimer startedAt={tc.startedAt} durationMs={tc.durationMs} />
               </div>
             ))}
           </div>
@@ -1115,6 +1156,10 @@ export default function App() {
   const [selectedModel, setSelectedModel] = useState("");
   const [selectedServerId, setSelectedServerId] = useState("");
   const [isRunning, setIsRunning] = useState(false);
+  // Start of the current model "Thinking…" phase (prompt-eval + reasoning before output). Reset at
+  // send and after each tool result (the model thinks again for the next step); null when idle.
+  // Drives the live timer on the thinking indicator, mirroring the per-tool-call timers.
+  const [thinkingAt, setThinkingAt] = useState<number | null>(null);
   const [showAdmin, setShowAdmin] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
   const [showHistory, setShowHistory] = useState(false); // hidden on launch; toggle to open
@@ -1304,8 +1349,9 @@ export default function App() {
     invoke("stop_generation").catch(() => {});
     streamEpoch.current += 1;
     setIsRunning(false);
+    setThinkingAt(null);
     // Close any streaming "Thinking…" bubble so it can't persist after Stop, and drop an empty one.
-    setMessages(prev => prev
+    setMessages(prev => finalizeCallTimers(prev)
       .map(m => (m.streaming ? { ...m, streaming: false, status: undefined } : m))
       .filter(m => !(m.role === "assistant" && !m.streaming && !m.text && !(m.toolCalls?.length))));
   };
@@ -1393,15 +1439,16 @@ export default function App() {
 
     listen<{ name: string; args: string }>("agent-tool-call", e => {
       if (!streamActive()) return;
+      const call = { name: e.payload.name, args: e.payload.args, startedAt: Date.now() };
       setMessages(prev => {
         const updated = prev.map(m =>
           m.role === "assistant" && m.streaming
-            ? { ...m, toolCalls: [...(m.toolCalls ?? []), { name: e.payload.name, args: e.payload.args }] }
+            ? { ...m, toolCalls: [...(m.toolCalls ?? []), call] }
             : m
         );
         const hasStreaming = prev.some(m => m.role === "assistant" && m.streaming);
         if (!hasStreaming) {
-          return [...updated, { id: uid(), role: "assistant", text: "", streaming: true, toolCalls: [{ name: e.payload.name, args: e.payload.args }] }];
+          return [...updated, { id: uid(), role: "assistant", text: "", streaming: true, toolCalls: [call] }];
         }
         return updated;
       });
@@ -1409,11 +1456,31 @@ export default function App() {
 
     listen<{ name: string; result: string; ui?: ToolUi; images?: string[]; artifact?: { title: string; html: string } }>("agent-tool-result", e => {
       if (!streamActive()) return;
+      setThinkingAt(Date.now()); // tool finished — the model now thinks for the next step
       setMessages(prev => {
-        // Find args for this tool call from the most recent streaming assistant message
-        const streamingMsg = [...prev].reverse().find(m => m.role === "assistant" && m.streaming);
-        const matchingCall = streamingMsg?.toolCalls?.find(tc => tc.name === e.payload.name);
-        const closed = prev.map(m => m.streaming ? { ...m, streaming: false } : m);
+        const now = Date.now();
+        // Locate the most recent still-running call of this name (dispatch is sequential, so there's
+        // exactly one) to stamp its final duration and read its args for the result row.
+        let ti = -1, tj = -1;
+        outer: for (let mi = prev.length - 1; mi >= 0; mi--) {
+          const tcs = prev[mi].toolCalls;
+          if (!tcs) continue;
+          for (let ci = tcs.length - 1; ci >= 0; ci--) {
+            if (tcs[ci].name === e.payload.name && tcs[ci].startedAt != null && tcs[ci].durationMs == null) {
+              ti = mi; tj = ci; break outer;
+            }
+          }
+        }
+        const matchingCall = ti >= 0 ? prev[ti].toolCalls![tj] : undefined;
+        const closed = prev.map((m, mi) => {
+          let mm = m;
+          if (mi === ti) {
+            const toolCalls = m.toolCalls!.map((tc, ci) =>
+              ci === tj ? { ...tc, durationMs: now - (tc.startedAt ?? now) } : tc);
+            mm = { ...mm, toolCalls };
+          }
+          return mm.streaming ? { ...mm, streaming: false } : mm;
+        });
         // Resolve {{figure:N}} tokens in a model artifact against charts generated this turn.
         let artifact = e.payload.artifact;
         if (artifact?.html && artifact.html.includes("{{figure:")) {
@@ -1452,8 +1519,9 @@ export default function App() {
     listen<{ error: string | null }>("agent-done", e => {
       if (!streamActive()) return;
       setIsRunning(false);
+      setThinkingAt(null);
       setMessages(prev => {
-        const closed = prev.map(m => m.streaming ? { ...m, streaming: false } : m);
+        const closed = finalizeCallTimers(prev).map(m => m.streaming ? { ...m, streaming: false } : m);
         if (e.payload.error) return [...closed, { id: uid(), role: "error", text: e.payload.error }];
         return closed;
       });
@@ -1705,6 +1773,7 @@ export default function App() {
     streamEpoch.current += 1;
     streamOwner.current = streamEpoch.current;
     setIsRunning(true);
+    setThinkingAt(Date.now());
 
     try {
       const allowedDirs = await invoke<string[]>("get_allowed_dirs").catch(() => [] as string[]);
@@ -2072,7 +2141,7 @@ export default function App() {
           <div className="messages">
             {messages.map((msg, i) => {
               if (msg.role === "user")        return <UserMessage key={msg.id} text={msg.text} imageDataUrls={msg.imageDataUrls} />;
-              if (msg.role === "assistant")   return <AssistantMessage key={msg.id} msg={msg} onExport={isLastAssistantInTurn(messages, i) ? exportReport : undefined} />;
+              if (msg.role === "assistant")   return <AssistantMessage key={msg.id} msg={msg} thinkingAt={thinkingAt} onExport={isLastAssistantInTurn(messages, i) ? exportReport : undefined} />;
               if (msg.role === "tool-result") return (
                 <ToolResultRow
                   key={msg.id}
@@ -2100,7 +2169,12 @@ export default function App() {
             {isRunning && !messages.some(m => m.streaming) && (
               <div className="msg-assistant">
                 <img src={lexiLogo} className="assistant-avatar" alt="Lexi" />
-                <div className="assistant-content"><ThinkingDots /></div>
+                <div className="assistant-content">
+                  <div className="thinking-row">
+                    <ThinkingDots />
+                    <ToolTimer startedAt={thinkingAt ?? undefined} />
+                  </div>
+                </div>
               </div>
             )}
           </div>
