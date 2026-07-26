@@ -1106,6 +1106,30 @@ fn fit_wire_to_context(
     elided
 }
 
+/// True when interactive assistant text reads as a "here's what I'll do next" preamble rather than
+/// a finished answer — e.g. it ends on a colon, or a short message announces an action ("let me
+/// fetch…", "now I need to call…") without actually calling a tool. The agent loop treats plain
+/// text (no tool call) as the final answer and ends; this lets it instead nudge the model to take
+/// the step (or give its real answer), so a run with more to do isn't cut off mid-narration.
+/// Deliberately conservative — the cost of a false positive is one extra step, so we only trip on
+/// strong signals to avoid re-prompting genuine final answers.
+fn looks_like_continuation(text: &str) -> bool {
+    let t = text.trim();
+    if t.is_empty() { return false; }
+    // A finished answer almost never ends on a colon; a "next I'll do X:" preamble does.
+    if t.ends_with(':') { return true; }
+    // Otherwise only a SHORT message that both announces intent AND names an action but takes none.
+    if t.chars().count() > 320 { return false; }
+    let lower = t.to_lowercase();
+    let intent = ["let me ", "i'll ", "i will ", "i need to ", "now i ", "next i ",
+        "let's ", "i'm going to ", "i am going to ", "now i'll", "now let me"]
+        .iter().any(|p| lower.contains(p));
+    let action = ["fetch", "call the", "look up", "retrieve", "query the",
+        "run_python", "use the", "get the", "search the", "pull the"]
+        .iter().any(|a| lower.contains(a));
+    intent && action
+}
+
 pub async fn agent_loop<R: tauri::Runtime>(
     backend: &Backend,
     model: &str,
@@ -1143,6 +1167,11 @@ pub async fn agent_loop<R: tauri::Runtime>(
     let mut nudged = false;
     let mut continuations = 0usize;
     let mut consecutive_text_without_tools = 0usize; // detect "I'm done" loops
+    // Interactive narrate-stop guard: consecutive times the model ended a step with a "next I'll…"
+    // preamble (no tool call). Nudged up to this many times to actually continue, then accepted as
+    // final so a stubborn narrator can't loop forever.
+    let mut narrate_nudges = 0usize;
+    const MAX_NARRATE_NUDGES: usize = 2;
     let cap = if tool_cap == 0 { DEFAULT_TOOL_CAP } else { tool_cap };
     // Oversized tool results are offloaded here for run_python to read (interactive chat only —
     // jobs can't run code). run_python is given read access to this dir via dispatch_paths.
@@ -1397,6 +1426,23 @@ pub async fn agent_loop<R: tauri::Runtime>(
                 });
                 continue;
             }
+            // Interactive narrate-stop: the model ended a step describing a next action ("Now I'll
+            // fetch…: ") without calling a tool. Plain text normally ends the run, so an otherwise
+            // productive run gets cut off mid-narration. Nudge it (a bounded number of times) to
+            // either take the step or give its real final answer, instead of ending here.
+            if !silent && narrate_nudges < MAX_NARRATE_NUDGES && looks_like_continuation(&full_text) {
+                narrate_nudges += 1;
+                let mut conv = conversation.lock().unwrap();
+                conv.push(WireMessage {
+                    role: "user".into(),
+                    content: Some("You described a next step but didn't take it. If you still need \
+                        more data, call the tool now. If you already have everything, write your \
+                        complete final answer — don't just describe what you would do.".into()),
+                    tool_calls: None, tool_call_id: None, name: None, images: None,
+                });
+                continue;
+            }
+
             if !silent {
                 // Never end an interactive run blank — salvage a written answer if the
                 // model finished without ever streaming any text.
@@ -1413,9 +1459,11 @@ pub async fn agent_loop<R: tauri::Runtime>(
             return Ok(());
         }
 
-        // Tool call received — reset both detectors so the next empty/text response
-        // after this tool's result is handled correctly (can nudge again if needed)
+        // Tool call received — reset the detectors so the next empty/text response after this
+        // tool's result is handled correctly (can nudge again if needed). narrate_nudges resets too:
+        // progress was made, so a later narrate-stop gets a fresh budget (still bounded per episode).
         consecutive_text_without_tools = 0;
+        narrate_nudges = 0;
         nudged = false;
 
         // Loop breaker: has this exact tool-call set been issued before — consecutively OR just
@@ -2067,6 +2115,22 @@ mod tests {
         assert_eq!(wire.last().unwrap().content.as_deref(), Some(big.as_str()));
         // A second pass finds it already within budget — proving the first brought it under.
         assert_eq!(fit_wire_to_context(&mut wire, &tools, 32768, None), 0);
+    }
+
+    #[test]
+    fn looks_like_continuation_trips_on_preambles_not_final_answers() {
+        // The exact test-#4 case: had the data, narrated the next step, ended on a colon.
+        assert!(looks_like_continuation(
+            "I have the settlement and coordinates. Now I need to fetch the building footprint for the TOID using OS Features. Let me get that:"));
+        // Short "I'll do X" announcements with no tool call.
+        assert!(looks_like_continuation("Let me look up the USRN for this property."));
+        assert!(looks_like_continuation("Next, I'll call the crime API to get the figures."));
+        // Genuine final answers must NOT trip it.
+        assert!(!looks_like_continuation(
+            "The property is on USRN 8400071 (Bristol). Its building polygon is TOID osgb1000005572568. That completes the lookup."));
+        assert!(!looks_like_continuation("The answer is 42."));
+        assert!(!looks_like_continuation("Let me know if you'd like anything else."));
+        assert!(!looks_like_continuation(""));
     }
 
     #[test]
