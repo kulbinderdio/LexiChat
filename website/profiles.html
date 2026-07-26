@@ -202,6 +202,42 @@ tailwind.config = {
       </div>
     </div>
 
+    <!-- OS Data Explorer -->
+    <div id="os-data" class="scroll-mt-24 bg-white border border-slate-200 rounded-3xl p-8 md:p-10 card-hover">
+      <div class="flex items-start gap-5">
+        <div class="text-5xl flex-shrink-0">🗺️</div>
+        <div class="flex-1 min-w-0">
+          <div class="flex flex-wrap items-center gap-2 mb-2">
+            <h2 class="text-2xl font-bold text-slate-900">OS Data Explorer</h2>
+            <span class="px-2.5 py-1 bg-slate-100 text-slate-600 text-xs font-semibold rounded-full">Geospatial (UK)</span>
+            <span class="px-2.5 py-1 bg-amber-50 text-amber-700 text-xs font-semibold rounded-full">Free OS key</span>
+            <span class="px-2.5 py-1 bg-indigo-50 text-indigo-700 text-xs font-semibold rounded-full">100% local</span>
+          </div>
+          <p class="text-slate-600 leading-relaxed mb-4">An Ordnance Survey identifier expert. It navigates the relationships between properties (UPRN), streets (USRN) and OS MasterMap features (TOID) through the OS Linked Identifiers API — chain a property to its street, list every property on a street, find a building's polygon — and reaches for OS Names, Features, Maps and routing when a question needs coordinates, geometry or a basemap.</p>
+          <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Connects</div>
+          <div class="flex flex-wrap gap-2 mb-4">
+            <span class="px-2.5 py-1 bg-slate-100 text-slate-700 text-xs font-medium rounded-lg">OS Linked Identifiers</span>
+            <span class="px-2.5 py-1 bg-slate-100 text-slate-700 text-xs font-medium rounded-lg">OS Names</span>
+            <span class="px-2.5 py-1 bg-slate-100 text-slate-700 text-xs font-medium rounded-lg">OS Features</span>
+            <span class="px-2.5 py-1 bg-slate-100 text-slate-700 text-xs font-medium rounded-lg">OS Maps</span>
+            <span class="px-2.5 py-1 bg-slate-100 text-slate-700 text-xs font-medium rounded-lg">OS Vector Tile</span>
+            <span class="px-2.5 py-1 bg-amber-50 text-amber-700 text-xs font-medium rounded-lg">Mapbox routing (token)</span>
+          </div>
+          <div class="bg-slate-50 rounded-xl p-4 mb-4 text-sm text-slate-600 italic">"What street and building does UPRN 100023336956 belong to?" · "List every property on USRN 8400071"</div>
+          <div class="text-xs text-slate-400 mb-5">The five OS APIs share one free <a href="https://osdatahub.os.uk" target="_blank" rel="noopener" class="text-accent hover:underline">OS Data Hub</a> project key — paste it into each OS service's settings after import (Admin → OpenAPI). Enable the Python code sandbox (Admin → Tools) so it can tally large results exactly. Routing/POI is optional and uses the bundled Mapbox MCP server (add a free <a href="https://account.mapbox.com" target="_blank" rel="noopener" class="text-accent hover:underline">Mapbox token</a>). Note: OS Features <em>Topography</em> layers need a Premium OS plan; the OpenData layers are free.</div>
+          <div class="flex flex-wrap gap-3">
+            <a href="profiles/os-data-explorer.json" download class="inline-flex items-center gap-2 bg-accent hover:bg-accent-dark text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors">
+              <span class="material-symbols-outlined" style="font-size:16px">download</span> Download profile
+            </a>
+            <a href="https://www.youtube.com/@LexiChat" target="_blank" rel="noopener" class="inline-flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors">
+              <span class="material-symbols-outlined" style="font-size:16px">play_circle</span> Watch demo
+            </a>
+            <a href="docs/getting-started.html" class="inline-flex items-center gap-2 text-slate-500 hover:text-accent px-3 py-2.5 rounded-xl text-sm font-semibold transition-colors">Setup guide →</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- More coming -->
     <div class="border-2 border-dashed border-slate-200 rounded-3xl p-10 text-center">
       <div class="text-3xl mb-2">✨</div>
