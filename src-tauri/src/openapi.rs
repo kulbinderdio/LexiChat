@@ -120,6 +120,25 @@ fn resolve_ref<'a>(schema: &'a Value, root: &'a Value, depth: u8) -> std::borrow
     Cow::Borrowed(schema)
 }
 
+/// Resolve a parameter object that is itself a `$ref` into `components/parameters` (OpenAPI lets a
+/// path/query parameter be referenced rather than inlined — OS APIs do this for the shared `{id}`
+/// path param). Without this the referenced param has no `name`/`in`, so it's silently dropped and
+/// e.g. a `{id}` path segment never gets filled — the request then 400s ("Identifier is not
+/// valid"). Non-`$ref` params, and refs that can't be resolved, are returned unchanged.
+fn resolve_param<'a>(param: &'a Value, root: &'a Value) -> &'a Value {
+    if let Some(r) = param.get("$ref").and_then(|v| v.as_str()) {
+        if let Some(name) = r.strip_prefix("#/components/parameters/") {
+            if let Some(def) = root.get("components")
+                .and_then(|c| c.get("parameters"))
+                .and_then(|p| p.get(name))
+            {
+                return def;
+            }
+        }
+    }
+    param
+}
+
 /// Build a JSON-Schema property for one parameter, carrying through the details a model needs
 /// to call the API correctly — notably `enum` values and array `items` — which are lost if
 /// only `type` is copied. `$ref`/`allOf` are resolved against the spec's components.
@@ -181,6 +200,9 @@ pub fn parse_spec(title: &str, _base_url: &str, spec_json: &str) -> Result<Vec<A
             // Path + query parameters
             if let Some(param_arr) = operation["parameters"].as_array() {
                 for param in param_arr {
+                    // A parameter may be a `$ref` into components/parameters — resolve it first so
+                    // its name/in/required/schema are read from the referenced object, not dropped.
+                    let param = resolve_param(param, &spec);
                     let name = param["name"].as_str().unwrap_or("").to_string();
                     let location = param["in"].as_str().unwrap_or("query").to_string();
                     let required = param["required"].as_bool().unwrap_or(location == "path");
@@ -422,6 +444,41 @@ mod tests {
         assert_eq!(props["CommitteeStatus"]["type"], "string");
         assert_eq!(props["CommitteeIds"]["type"], "array");
         assert_eq!(props["CommitteeIds"]["items"]["type"], "integer");
+    }
+
+    /// A path parameter defined as a `$ref` into components/parameters must be resolved to its
+    /// referenced object — otherwise it has no name and is dropped, the `{id}` never gets filled,
+    /// and the request 400s (the OS Linked Identifiers `featureIdentifier` bug).
+    #[test]
+    fn ref_path_param_is_resolved_and_required() {
+        let spec = r##"{
+          "openapi": "3.0.0",
+          "paths": {
+            "/featureTypes/{featureType}/{id}": {
+              "get": {
+                "operationId": "getLinksByFeatureType",
+                "parameters": [
+                  { "$ref": "#/components/parameters/featureIdentifier" },
+                  { "name": "featureType", "in": "path", "required": true,
+                    "schema": { "type": "string" } }
+                ]
+              }
+            }
+          },
+          "components": { "parameters": {
+            "featureIdentifier": { "name": "id", "in": "path", "required": true,
+              "schema": { "type": "string" } }
+          } }
+        }"##;
+        let tools = parse_spec("Links", "https://x", spec).unwrap();
+        let params = &tools[0].schema["function"]["parameters"];
+        // The referenced `id` path param is present, typed, and required alongside featureType.
+        assert_eq!(params["properties"]["id"]["type"], "string");
+        let required = params["required"].as_array().unwrap();
+        assert!(required.iter().any(|v| v == "id"), "id must be required");
+        assert!(required.iter().any(|v| v == "featureType"));
+        // And it's recognised as a PATH param so execute() substitutes {id} rather than appending ?id=
+        assert!(tools[0].parameters.iter().any(|p| p.name == "id" && p.location == "path"));
     }
 
     #[test]
