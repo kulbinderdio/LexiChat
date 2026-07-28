@@ -238,17 +238,56 @@ Each reuses an existing capability; the skill just packages the know-how.
 > Migrating them to skills would shrink those system prompts and free context — the same win the
 > framework delivers for new capabilities.
 
-## 12. Suggested phasing
+## 12. Phasing (status)
 
-- **Phase 1 — runtime.** `use_skill` meta-tool, `AppState.skills`, `set_skills`, resource staging into
-  `/work/skills`, the "AVAILABLE SKILLS" preamble. Ship with **one** built-in skill (presentation) and
-  `python-pptx` bundled in `prepare-pyodide.mjs`. No UI yet — seed the skill on disk.
-- **Phase 2 — authoring & scoping.** Admin → Skills tab (CRUD + markdown editor + resource upload),
-  per-profile `enabledSkillIds`, import/export bundles.
+- **Phase 1 — runtime. ✅ Shipped.** `use_skill` meta-tool + dispatch, `AppState.skills`, the
+  "AVAILABLE SKILLS" preamble, `get_skills`. 16 built-in skills seeded on startup (re-seeded so they
+  track the app version). `python-pptx` bundled in `prepare-pyodide.mjs`. The presentation skill
+  renders an inline styled deck via `create_artifact` **and** a themed `.pptx`. (Resource staging into
+  `/work/skills` deferred — built-ins are instructions-only so far.)
+- **Phase 2a — scoping + gating. ✅ Shipped.** Per-profile `enabledSkillIds` (`None` = all) filtered
+  in `send_message`; Admin → **Skills** tab with per-profile checkboxes. `requires:` frontmatter — a
+  skill is offered only when its required tools are enabled, so `run_python` skills need the sandbox
+  while instructions-only skills surface anywhere. The four website profiles carry curated
+  `enabledSkillIds`.
+- **Phase 2b — authoring + import/export. ⏳ Next.** See §14.
 - **Phase 3 — distribution & migration.** Website skill downloads (like profiles); migrate the fixed
   parts of Local Area Checker / Research Scout prompts into skills to reclaim context.
 
-## 13. Open questions
+## 13. Phase 2b — custom skills: authoring + import/export
+
+### Authoring (Admin → Skills)
+Today the Skills tab is read-only (built-ins) + per-profile checkboxes. Phase 2b adds **create/edit**:
+- "New skill" → an editor for `name`, `description`, `requires`, and the markdown **body**; **Save**
+  writes `~/.local/share/lexichat/skills/<id>/SKILL.md` and reloads `AppState.skills`.
+- **Resource upload** — attach files (a `.pptx` template, a `helpers.py`, an inlined `reveal.js`);
+  they're stored beside `SKILL.md` and, on `use_skill`, staged into `/work/skills/` (the deferred
+  Phase 1 staging step) so `run_python` can read them.
+- Built-ins remain **app-managed** (re-seeded, not editable in place); "Duplicate to edit" copies a
+  built-in to a new user id.
+- Backend commands: `save_skill`, `delete_skill` (write/remove the folder + reload).
+
+### Import/export — closing the export gap
+A profile export already carries `enabledSkillIds` (the profile is spread wholesale into the
+envelope), and **built-in** skills resolve on any install with no content bundled — exactly like
+built-in OpenAPI specs (`profileIO.ts` bundles only *non-built-in* tool definitions). The gap is
+**custom** skills: the id travels but the `SKILL.md`/resources don't, so it dangles on another
+machine (the backend simply never matches an unknown id — no crash, the skill just doesn't appear).
+
+Fix, mirroring the OpenAPI-spec bundling in `buildExportEnvelope`:
+1. **Export** (`profileIO.ts`): for each `enabledSkillId` that is **not** a built-in, include the
+   skill's `{ id, name, description, requires, body, resources: [{name, base64}] }` in the envelope
+   (new `toolRegistry.skills` array or a top-level `skills`). Built-in ids stay reference-only.
+2. **Import** (`mergeImport` + a backend `import_skill`): write each bundled skill to disk (a new id
+   if it collides with an existing user skill, remapping the profile's `enabledSkillIds`), then
+   reload `AppState.skills`. Same id-remap discipline already used for OpenAPI/MCP/SPARQL.
+3. **Website distribution**: a skill can then be shipped on the site as a standalone bundle (like a
+   profile), or simply travel inside a profile that uses it.
+
+Net: once authoring exists, export/import stays complete — built-ins resolve by reference, custom
+skills travel with their content.
+
+## 14. Open questions
 
 - **Auto-suggest vs explicit** — should the model always choose `use_skill`, or should a strong request
   match auto-load a skill? Start explicit (deterministic, debuggable); consider auto-load later.
