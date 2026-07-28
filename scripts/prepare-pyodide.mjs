@@ -26,7 +26,9 @@ const lock = JSON.parse(readFileSync(join(dest, "pyodide-lock.json"), "utf8"));
 const version = JSON.parse(readFileSync(join(src, "package.json"), "utf8")).version;
 const cdn = `https://cdn.jsdelivr.net/pyodide/v${version}/full/`;
 const pkgs = lock.packages || {};
-const roots = ["numpy", "pandas", "matplotlib", "scipy", "sympy", "beautifulsoup4", "geopandas"];
+// lxml + Pillow are C extensions from the Pyodide distribution — needed by python-pptx (the
+// presentation skill). Pillow is usually already pulled in by matplotlib; listing it is harmless.
+const roots = ["numpy", "pandas", "matplotlib", "scipy", "sympy", "beautifulsoup4", "geopandas", "lxml", "pillow"];
 const closure = new Set();
 const stack = [...roots];
 while (stack.length) {
@@ -62,6 +64,11 @@ const pypi = [
   // its underscore. Register/depend on the canonical "et-xmlfile", import "et_xmlfile".
   { name: "et-xmlfile", imports: ["et_xmlfile"], depends: [] },
   { name: "openpyxl",   imports: ["openpyxl"],   depends: ["et-xmlfile"] },
+  // python-pptx (presentation skill) + its pure-Python deps. lxml/Pillow come from the dist (roots
+  // above); these are pure wheels. The loop below skips any already present in the lock.
+  { name: "typing-extensions", imports: ["typing_extensions"], depends: [] },
+  { name: "xlsxwriter",        imports: ["xlsxwriter"],        depends: [] },
+  { name: "python-pptx",       imports: ["pptx"],              depends: ["lxml", "pillow", "xlsxwriter", "typing-extensions"] },
 ];
 let pypiCount = 0;
 for (const p of pypi) {

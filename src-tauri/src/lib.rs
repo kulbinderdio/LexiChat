@@ -8,6 +8,7 @@ mod jobs;
 mod job_designer;
 mod history;
 mod wiki;
+mod skills;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -28,6 +29,7 @@ pub struct AppState {
     pub mcp_servers:          Mutex<Vec<MCPServerConfig>>,
     pub mcp_connections:      tokio::sync::Mutex<HashMap<String, MCPConnection>>,
     pub allowed_dirs:         Mutex<Vec<String>>,
+    pub skills:               Mutex<Vec<skills::RegisteredSkill>>,
     pub jobs:                 Mutex<Vec<jobs::ScheduledJob>>,
     pub job_runs:             Mutex<Vec<jobs::JobRun>>,
     pub tray:                 Mutex<Option<tauri::tray::TrayIcon<tauri::Wry>>>,
@@ -88,6 +90,7 @@ impl Default for AppState {
             .ok()
             .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
             .unwrap_or_default();
+        skills::seed_builtin_skills();
         Self {
             backend:         Mutex::new(ollama::Backend::ollama("http://localhost:11434")),
             conversation:    Mutex::new(Vec::new()),
@@ -96,6 +99,7 @@ impl Default for AppState {
             mcp_servers:     Mutex::new(Vec::new()),
             mcp_connections: tokio::sync::Mutex::new(HashMap::new()),
             allowed_dirs:    Mutex::new(saved),
+            skills:          Mutex::new(skills::load_skills()),
             jobs:            Mutex::new(jobs::load_jobs()),
             job_runs:        Mutex::new(jobs::load_runs()),
             tray:            Mutex::new(None),
@@ -362,6 +366,10 @@ pub struct SendMessageArgs {
     /// Server IDs the active profile has enabled. Empty = no profile active (use all servers).
     #[serde(default)]
     pub enabled_mcp_server_ids: Vec<String>,
+    /// Skill IDs the active profile enables. `None` (field absent) = all loaded skills (backward
+    /// compatible); `Some([...])` = exactly those; `Some([])` = none.
+    #[serde(default)]
+    pub enabled_skill_ids: Option<Vec<String>>,
     /// Cap on tools shown to the model per step (from the profile's maxTools). None/0 → default.
     #[serde(default)]
     pub max_tools: Option<usize>,
@@ -503,6 +511,16 @@ async fn send_message(
     let specs_snapshot: Vec<openapi::RegisteredSpec> = state.openapi_specs.lock().unwrap().clone();
     let sparql_snapshot: Vec<sparql::RegisteredSparqlEndpoint> = state.sparql_endpoints.lock().unwrap().clone();
     let allowed_dirs_snapshot: Vec<String> = state.allowed_dirs.lock().unwrap().clone();
+    // Skills are offered only when the code sandbox is available to execute them (the built-in
+    // skills need run_python), and narrowed to the active profile's enabled set (None = all).
+    let skills_snapshot: Vec<skills::RegisteredSkill> =
+        if args.tools.iter().any(|t| t.function.name == "run_python") {
+            let all = state.skills.lock().unwrap().clone();
+            match &args.enabled_skill_ids {
+                Some(ids) => all.into_iter().filter(|s| ids.contains(&s.id)).collect(),
+                None => all,
+            }
+        } else { Vec::new() };
 
     let options = if args.temperature.is_some() || args.top_p.is_some() || args.top_k.is_some()
         || args.repeat_penalty.is_some() || args.seed.is_some()
@@ -546,6 +564,7 @@ async fn send_message(
         if args.max_steps == 0 { usize::MAX } else { args.max_steps.max(1) }, // 0 = no limit; else uncapped (loop guards still stop runaways)
         cancel,
         true, // discover_tools: interactive chat uses find_tools discovery for large tool sets
+        skills_snapshot,
     )
     .await
     .map_err(|e| e.to_string())
@@ -763,6 +782,12 @@ async fn call_tool_from_code(
 #[tauri::command]
 fn get_allowed_dirs(state: State<'_, AppState>) -> Vec<String> {
     state.allowed_dirs.lock().unwrap().clone()
+}
+
+/// List the loaded skills (id, name, description, body). Phase 1: read-only, for inspection/UI.
+#[tauri::command]
+fn get_skills(state: State<'_, AppState>) -> Vec<skills::RegisteredSkill> {
+    state.skills.lock().unwrap().clone()
 }
 
 #[tauri::command]
@@ -1954,6 +1979,7 @@ pub fn run() {
             set_allowed_dirs,
             respond_code_permission,
             set_code_exec_unlocked,
+            get_skills,
             respond_python_result,
             save_pending_outputs,
             call_tool_from_code,

@@ -717,6 +717,27 @@ pub fn find_tools_schema() -> ToolSchema {
     })).expect("static find_tools schema is valid")
 }
 
+/// The `use_skill` meta-tool schema. When a profile has skills, only their one-line descriptions
+/// sit in the prompt; the model calls this to load a skill's full instructions on demand (see
+/// docs/skills-framework.md). Registered per step only when ≥1 skill is available.
+pub fn use_skill_schema() -> ToolSchema {
+    serde_json::from_value(serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "use_skill",
+            "description": "Load the full step-by-step instructions for one of the AVAILABLE SKILLS \
+                listed in your system prompt. Call it with the skill's name (e.g. use_skill(\"presentation\")) \
+                BEFORE attempting that kind of task; it returns the recipe to follow. Only use skill \
+                names shown in the AVAILABLE SKILLS list.",
+            "parameters": {
+                "type": "object",
+                "properties": { "name": { "type": "string", "description": "The skill name to load." } },
+                "required": ["name"]
+            }
+        }
+    })).expect("static use_skill schema is valid")
+}
+
 /// Deterministic keyword retrieval over the *external* tool groups (built-ins are always present,
 /// so they're excluded). Scores each tool on term hits in its name (weighted), description, and
 /// group label; returns the top `limit` as (name, one-line description). Empty query → a catalog
@@ -1118,16 +1139,37 @@ fn looks_like_continuation(text: &str) -> bool {
     if t.is_empty() { return false; }
     // A finished answer almost never ends on a colon; a "next I'll do X:" preamble does.
     if t.ends_with(':') { return true; }
-    // Otherwise only a SHORT message that both announces intent AND names an action but takes none.
-    if t.chars().count() > 320 { return false; }
     let lower = t.to_lowercase();
-    let intent = ["let me ", "i'll ", "i will ", "i need to ", "now i ", "next i ",
-        "let's ", "i'm going to ", "i am going to ", "now i'll", "now let me"]
-        .iter().any(|p| lower.contains(p));
-    let action = ["fetch", "call the", "look up", "retrieve", "query the",
-        "run_python", "use the", "get the", "search the", "pull the"]
-        .iter().any(|a| lower.contains(a));
-    intent && action
+
+    const INTENT: &[&str] = &["let me", "i'll", "i will", "let's", "now i", "next i",
+        "i'm going to", "i am going to", "i need to", "i should", "now let me", "first, let me"];
+
+    // The FINAL sentence is the tell: a message that ends on an announced-but-unfulfilled action
+    // ("…Let me do that now.", "…I'll compile it into a report.") is a narrate-stop even though it
+    // contains no colon or specific API verb. Take the last non-empty sentence and check it.
+    let last = lower
+        .rsplit(|c: char| matches!(c, '.' | '!' | '?' | '\n'))
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .unwrap_or(lower.trim());
+    // "let me know if…" is a closing pleasantry, i.e. a COMPLETE answer — never a continuation.
+    if !last.starts_with("let me know") && INTENT.iter().any(|p| last.starts_with(p)) {
+        // A bare intent sentence that ends the message: either it trails off on "…now" or it's short
+        // enough to be pure announcement (not "let me explain: <the actual explanation>").
+        if last.ends_with("now") || last.chars().count() <= 40 { return true; }
+    }
+
+    // Fallback: a SHORT message that both announces intent AND names an action but takes none.
+    if t.chars().count() <= 320 {
+        let has_intent = INTENT.iter().any(|p| lower.contains(p));
+        let has_action = ["do that", "do this", "compile", "put together", "assemble", "create",
+            "write ", "generate", "build ", "prepare", "produce", "draft", "finalis", "finaliz",
+            "complete the", "summar", "the report", "fetch", "call the", "look up", "retrieve",
+            "query the", "run_python", "use the", "get the", "search the", "pull the"]
+            .iter().any(|a| lower.contains(a));
+        return has_intent && has_action;
+    }
+    false
 }
 
 pub async fn agent_loop<R: tauri::Runtime>(
@@ -1161,6 +1203,9 @@ pub async fn agent_loop<R: tauri::Runtime>(
     // Discovery mode: when there are many tools, expose only built-ins + `find_tools` and let the
     // model load specialized tools on demand, instead of the LLM pre-flight. Jobs pass false.
     discover_tools: bool,
+    // On-demand capability recipes. Their descriptions go in the prompt; the model loads a body via
+    // `use_skill`. Empty for background jobs.
+    skills: Vec<crate::skills::RegisteredSkill>,
 ) -> anyhow::Result<()> {
     use std::sync::atomic::Ordering;
     let run_start = std::time::Instant::now();
@@ -1207,8 +1252,10 @@ pub async fn agent_loop<R: tauri::Runtime>(
     const TOOL_NAME_CALL_CAP: usize = 8;
     // Discovery mode: names of external tools the model has loaded this run via `find_tools`.
     let mut loaded_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // Whether any assistant text was ever streamed to the chat. If a run ends with this
-    // still false, we force a final answer so the user never sees a blank reply.
+    // Whether the model ever streamed a genuine FINAL answer — text on a step with NO tool call.
+    // Narration that accompanies a tool call ("Let me look that up…") does NOT count: a real answer
+    // ends the run immediately, so if we reach a salvage site with only narration behind us, the
+    // user still has no answer and we must force one. (Counting narration here caused blank replies.)
     let mut streamed_text = false;
     // Set once a server reports the model can't do tool calling; the rest of the run then sends no
     // tools (and skips per-step selection) so a non-tool model degrades to plain chat.
@@ -1226,6 +1273,18 @@ pub async fn agent_loop<R: tauri::Runtime>(
             loading it with find_tools.")
     } else {
         system_prompt.to_string()
+    };
+    // Skills preamble: only the one-line descriptions (cheap); the model pulls a full recipe with
+    // use_skill on demand. Appended after any discovery preamble.
+    let sys_prompt_effective = if skills.is_empty() {
+        sys_prompt_effective
+    } else {
+        let list = skills.iter()
+            .map(|s| format!("- {}: {}", s.name, s.description))
+            .collect::<Vec<_>>().join("\n");
+        format!("{sys_prompt_effective}\n\nAVAILABLE SKILLS — when the user's request is one of \
+            these, FIRST call use_skill(\"<name>\") to load its full instructions, then follow \
+            them:\n{list}")
     };
     for step in 0..max_steps {
         // Stop requested — end the run cleanly before doing any more work.
@@ -1279,6 +1338,10 @@ pub async fn agent_loop<R: tauri::Runtime>(
             }
             v
         };
+        // Skills are always loadable when present (independent of tool discovery/selection).
+        if !disable_tools && !skills.is_empty() {
+            tools.push(use_skill_schema());
+        }
 
         let schema_names: Vec<String> = tools.iter().map(|t| t.function.name.clone()).collect();
         if !silent {
@@ -1372,7 +1435,7 @@ pub async fn agent_loop<R: tauri::Runtime>(
             });
         }
 
-        if !full_text.trim().is_empty() { streamed_text = true; }
+        if !full_text.trim().is_empty() && tool_calls.is_empty() { streamed_text = true; }
 
         // Remember which tools were called so they stay available next step (chain continuity).
         last_used = tool_calls.iter().map(|tc| tc.function.name.clone()).collect();
@@ -1521,6 +1584,29 @@ pub async fn agent_loop<R: tauri::Runtime>(
                     format!("Loaded {} tool(s) — now available to call directly on your next step:\n{}",
                         found.len(),
                         found.iter().map(|(n, d)| format!("- {n}: {d}")).collect::<Vec<_>>().join("\n"))
+                };
+                if !silent {
+                    let _ = app.emit("agent-tool-call", ToolCallEvent { name: name.clone(), args: pretty_args.clone() });
+                    let _ = app.emit("agent-tool-result", ToolResultEvent {
+                        name: name.clone(), result: result.clone(), ui: None, images: Vec::new(), artifact: None });
+                }
+                conversation.lock().unwrap().push(WireMessage {
+                    role: "tool".into(), content: Some(result),
+                    tool_calls: None, tool_call_id: None, name: Some(name.clone()), images: None,
+                });
+                continue;
+            }
+
+            // Skill loader: return the named skill's full instructions so the model can follow them
+            // (progressive disclosure — only descriptions were in the prompt). Mirrors find_tools.
+            if name == "use_skill" {
+                let want = args.get("name").and_then(|q| q.as_str()).unwrap_or("").trim();
+                let result = match skills.iter()
+                    .find(|s| s.name.eq_ignore_ascii_case(want) || s.id.eq_ignore_ascii_case(want))
+                {
+                    Some(s) => format!("SKILL: {}\n\n{}\n\n(Now follow these instructions to complete the task.)", s.name, s.body),
+                    None => format!("No skill named \"{want}\". Available skills: {}.",
+                        skills.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")),
                 };
                 if !silent {
                     let _ = app.emit("agent-tool-call", ToolCallEvent { name: name.clone(), args: pretty_args.clone() });
@@ -2122,7 +2208,12 @@ mod tests {
         // The exact test-#4 case: had the data, narrated the next step, ended on a colon.
         assert!(looks_like_continuation(
             "I have the settlement and coordinates. Now I need to fetch the building footprint for the TOID using OS Features. Let me get that:"));
-        // Short "I'll do X" announcements with no tool call.
+        // The reported real case: gathered everything, announced compiling, then stopped (ends "now").
+        assert!(looks_like_continuation(
+            "You're absolutely right — I gathered all the data but never compiled it into a report. Let me do that now."));
+        // Bare "…now" and short intent endings, and intent+action announcements.
+        assert!(looks_like_continuation("Great, I have everything I need. Let me compile the report now."));
+        assert!(looks_like_continuation("I'll put that together into a summary."));
         assert!(looks_like_continuation("Let me look up the USRN for this property."));
         assert!(looks_like_continuation("Next, I'll call the crime API to get the figures."));
         // Genuine final answers must NOT trip it.
@@ -2130,6 +2221,7 @@ mod tests {
             "The property is on USRN 8400071 (Bristol). Its building polygon is TOID osgb1000005572568. That completes the lookup."));
         assert!(!looks_like_continuation("The answer is 42."));
         assert!(!looks_like_continuation("Let me know if you'd like anything else."));
+        assert!(!looks_like_continuation("Here is the full report. Let me highlight the key point: Bristol is the largest."));
         assert!(!looks_like_continuation(""));
     }
 
@@ -2272,6 +2364,7 @@ mod tests {
             20,
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             false, // discover_tools: exercise the legacy pre-flight path
+            vec![], // skills
         )
         .await;
 
@@ -2413,6 +2506,7 @@ mod tests {
             &conversation, vec![], vec![], &mcp, vec![], vec![], 10, 0, app.handle(), true, 5,
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             false, // discover_tools: exercise the legacy pre-flight path
+            vec![], // skills
         ).await;
         assert!(result.is_ok(), "run should complete: {result:?}");
     }
@@ -2570,6 +2664,7 @@ mod tests {
             &conversation, vec![], vec![], &mcp, vec![], vec![], 10, 0, app.handle(), false, 20,
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             false, // discover_tools: exercise the legacy pre-flight path
+            vec![], // skills
         )
         .await;
 
@@ -2672,6 +2767,7 @@ mod tests {
             app.handle(), false, 20,
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             false, // discover_tools: exercise the legacy pre-flight path
+            vec![], // skills
         ).await;
 
         assert!(result.is_ok(), "OpenAI run should complete: {result:?}");
@@ -2743,6 +2839,7 @@ mod tests {
             app.handle(), false, 20,
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             false, // discover_tools: exercise the legacy pre-flight path
+            vec![], // skills
         ).await;
 
         assert!(result.is_ok(), "run should survive an unsupported-tools endpoint: {result:?}");

@@ -94,6 +94,9 @@ export interface Profile {
   enabledMcpServerIds: string[];
   enabledOpenapiSpecIds: string[];
   enabledSparqlEndpointIds: string[];
+  // Skills this profile surfaces. undefined = all loaded skills (backward compatible); a list = only
+  // those; [] = none. Only matters when run_python is enabled (skills need the code sandbox).
+  enabledSkillIds?: string[];
   toolAuthOverrides?: Record<string, AuthConfig>; // tool id → auth override for this profile
   // Legacy fields kept for migration only — will be undefined after first load
   mcpServers?: StoredMCPServer[];
@@ -235,7 +238,10 @@ interface Props {
   onClose: () => void;
 }
 
-type Tab = "profiles" | "tools" | "models" | "openapi" | "sparql" | "mcp" | "sandbox" | "server" | "defaults";
+type Tab = "profiles" | "tools" | "skills" | "models" | "openapi" | "sparql" | "mcp" | "sandbox" | "server" | "defaults";
+
+/** A loaded skill, from the `get_skills` command. */
+interface SkillInfo { id: string; name: string; description: string; body?: string; }
 
 const BUILTIN_TOOLS = [
   { name: "list_files",          label: "List Files",           icon: "📁" },
@@ -2125,6 +2131,47 @@ function MCPTab({ stored, onChange }: { stored: StoredMCPServer[]; onChange: (s:
   );
 }
 
+// ── Skills tab ────────────────────────────────────────────────────────────────
+// Skills are on-demand capability recipes (the model loads one via use_skill). Built-ins are seeded
+// by the backend; here you choose which the ACTIVE profile surfaces. undefined enabledSkillIds = all.
+function SkillsTab({ skills, profile, onToggle }:
+  { skills: SkillInfo[]; profile: Profile | null; onToggle: (id: string, on: boolean) => void }) {
+  const enabled = profile ? new Set(profile.enabledSkillIds ?? skills.map(s => s.id)) : new Set(skills.map(s => s.id));
+  return (
+    <div className="admin-scroll">
+      <section className="admin-section">
+        <div className="admin-section-header">
+          <span className="admin-section-icon">📚</span>
+          <span className="admin-section-title">SKILLS</span>
+        </div>
+        <div className="admin-row-sub" style={{ padding: "0 4px 10px" }}>
+          On-demand recipes the model loads with <span style={{ fontFamily: "monospace" }}>use_skill</span> when a task calls for one — only their one-line descriptions sit in the prompt. Skills need the <strong>Run Python</strong> tool.{" "}
+          {profile ? <>Choose which ones <strong>{profile.name}</strong> offers.</> : <>Select a profile (Profiles tab → Set Active) to control which it offers; all are available by default.</>}
+        </div>
+        {skills.length === 0 && (
+          <div className="admin-row-sub" style={{ padding: 8 }}>No skills loaded.</div>
+        )}
+        {skills.map(s => (
+          <label key={s.id} className="admin-row" style={{ cursor: profile ? "pointer" : "default", alignItems: "flex-start" }}>
+            <input
+              type="checkbox"
+              className="admin-checkbox"
+              disabled={!profile}
+              checked={enabled.has(s.id)}
+              onChange={e => onToggle(s.id, e.target.checked)}
+              style={{ marginTop: 3 }}
+            />
+            <div className="admin-row-text">
+              <span className="admin-row-title" style={{ fontFamily: "monospace" }}>{s.name}</span>
+              <span className="admin-row-sub">{s.description}</span>
+            </div>
+          </label>
+        ))}
+      </section>
+    </div>
+  );
+}
+
 // ── Sandbox tab ───────────────────────────────────────────────────────────────
 
 function SandboxTab({ dirs, onChange }: { dirs: string[]; onChange: (dirs: string[]) => void }) {
@@ -2326,6 +2373,20 @@ export function AdminPanel({ settings, onSave, onClose }: Props) {
 
   // The active profile (if any) or global settings is the "context" for MCP/OpenAPI/Sandbox/Server tabs
   const activeProfile = draft.profiles.find(p => p.id === draft.activeProfileId) ?? null;
+
+  // Skills are loaded from disk by the backend (built-ins seeded there); fetch the catalogue for the
+  // Skills tab. Per-profile enablement: undefined = all; a list = only those.
+  const [availableSkills, setAvailableSkills] = useState<SkillInfo[]>([]);
+  useEffect(() => { invoke<SkillInfo[]>("get_skills").then(setAvailableSkills).catch(() => {}); }, []);
+  const toggleSkill = (skillId: string, on: boolean) => {
+    if (!activeProfile) return;
+    setDraft(d => ({ ...d, profiles: d.profiles.map(p => {
+      if (p.id !== activeProfile.id) return p;
+      const cur = p.enabledSkillIds ?? availableSkills.map(s => s.id); // undefined = all enabled
+      const next = on ? [...new Set([...cur, skillId])] : cur.filter(id => id !== skillId);
+      return { ...p, enabledSkillIds: next };
+    }) }));
+  };
   // Tools are now stored globally in toolRegistry; profiles reference by ID
   const ctxMCP     = draft.toolRegistry.mcpServers;
   const ctxOpenAPI = draft.toolRegistry.openapiSpecs;
@@ -2382,6 +2443,7 @@ export function AdminPanel({ settings, onSave, onClose }: Props) {
   const tabs: { id: Tab; icon: string; label: string }[] = [
     { id: "profiles", icon: "🤖",  label: "Profiles" },
     { id: "tools",    icon: "⚡",  label: "Tools" },
+    { id: "skills",   icon: "📚",  label: "Skills" },
     { id: "models",   icon: "🖥",  label: "Models" },
     { id: "openapi",  icon: "🌐",  label: "OpenAPI" },
     { id: "sparql",   icon: "🔗",  label: "SPARQL" },
@@ -2412,7 +2474,7 @@ export function AdminPanel({ settings, onSave, onClose }: Props) {
           ))}
         </div>
         <div className="admin-divider" />
-        {activeProfile && ["mcp","openapi","sparql","tools","sandbox","server"].includes(tab) && (
+        {activeProfile && ["mcp","openapi","sparql","tools","skills","sandbox","server"].includes(tab) && (
           <div style={{ padding: "4px 16px", background: "var(--purple-bg)", borderBottom: "1px solid var(--purple-border)", fontSize: 11, color: "var(--purple)", display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
             <span>🤖</span> Profile: <strong>{activeProfile.name}</strong>
           </div>
@@ -2420,6 +2482,7 @@ export function AdminPanel({ settings, onSave, onClose }: Props) {
         <div className="admin-content">
           {tab === "profiles" && <ProfilesTab settings={draft} onChange={setDraft} />}
           {tab === "tools"   && <ToolsTab   settings={draft} onChange={setDraft} />}
+          {tab === "skills"  && <SkillsTab  skills={availableSkills} profile={activeProfile} onToggle={toggleSkill} />}
           {tab === "models"  && <ModelsTab  settings={draft} onChange={setDraft} />}
           {tab === "openapi" && <OpenAPITab stored={ctxOpenAPI} onChange={setCtxOpenAPI} />}
           {tab === "sparql"  && <SparqlTab stored={ctxSparql} onChange={setCtxSparql} />}
