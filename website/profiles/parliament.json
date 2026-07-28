@@ -29,7 +29,15 @@
       "style": "precise",
       "responseLength": "auto",
       "contextSize": "short"
-    }
+    },
+    "enabledSkillIds": [
+      "branded-report",
+      "spreadsheet-model",
+      "citation-format",
+      "plain-english",
+      "chart-styling",
+      "dashboard"
+    ]
   },
   "toolRegistry": {
     "openapiSpecs": [

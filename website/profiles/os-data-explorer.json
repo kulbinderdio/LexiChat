@@ -33,7 +33,15 @@
       "responseLength": "auto",
       "contextSize": "short"
     },
-    "allowedDirs": []
+    "allowedDirs": [],
+    "enabledSkillIds": [
+      "geospatial-map",
+      "spreadsheet-model",
+      "dashboard",
+      "branded-report",
+      "api-explainer",
+      "chart-styling"
+    ]
   },
   "toolRegistry": {
     "openapiSpecs": [

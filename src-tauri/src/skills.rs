@@ -15,6 +15,10 @@ pub struct RegisteredSkill {
     pub id: String,
     pub name: String,
     pub description: String,
+    /// Built-in tools this skill needs to be usable (e.g. `run_python`). The skill is only offered
+    /// when the active profile enables all of them; empty = instructions-only, offered anywhere.
+    #[serde(default)]
+    pub requires: Vec<String>,
     /// The markdown instructions body — returned to the model by `use_skill`, not in the base prompt.
     #[serde(default)]
     pub body: String,
@@ -35,13 +39,18 @@ pub fn parse_skill_md(id: &str, text: &str) -> Option<RegisteredSkill> {
 
     let mut name = String::new();
     let mut description = String::new();
+    let mut requires = Vec::new();
     for line in front.lines() {
         let line = line.trim();
         if let Some(v) = line.strip_prefix("name:") { name = v.trim().to_string(); }
         else if let Some(v) = line.strip_prefix("description:") { description = v.trim().to_string(); }
+        else if let Some(v) = line.strip_prefix("requires:") {
+            requires = v.trim().trim_start_matches('[').trim_end_matches(']')
+                .split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
+        }
     }
     if name.is_empty() { name = id.to_string(); }
-    Some(RegisteredSkill { id: id.to_string(), name, description, body })
+    Some(RegisteredSkill { id: id.to_string(), name, description, requires, body })
 }
 
 /// Load every skill from disk (each direct subdirectory of the skills dir with a `SKILL.md`).
@@ -93,6 +102,7 @@ const BUILTIN_SKILLS: &[(&str, &str)] = &[
 const PRESENTATION_SKILL: &str = r##"---
 name: presentation
 description: Build a polished slide deck — shown INLINE in the chat and saved as an editable PowerPoint (.pptx). Use whenever the user asks for slides, a deck, or a presentation.
+requires: [run_python]
 ---
 # Building a presentation
 
@@ -216,6 +226,7 @@ prs.save('/work/out/deck.pptx'); print('saved /work/out/deck.pptx')
 const SPREADSHEET_SKILL: &str = r##"---
 name: spreadsheet-model
 description: Build an editable multi-sheet Excel workbook (.xlsx) with real formulas and formatting — budgets, trackers, financial models. Use when the user asks for a spreadsheet, workbook, or Excel model.
+requires: [run_python]
 ---
 # Building a spreadsheet / Excel model
 
@@ -281,6 +292,7 @@ wb.save('/work/out/model.xlsx'); print('saved /work/out/model.xlsx')
 const GEOSPATIAL_SKILL: &str = r##"---
 name: geospatial-map
 description: Plot geospatial data as a map figure — points, lines, polygons or a choropleth — with geopandas/matplotlib, shown inline. Use when the user wants to map locations, boundaries, or regional values.
+requires: [run_python]
 ---
 # Mapping geospatial data
 
@@ -373,6 +385,7 @@ Everything inline, no CDNs. Keep the prose answer in chat; put the dashboard in 
 const LOCAL_AREA_SKILL: &str = r##"---
 name: local-area-brief
 description: Produce a UK neighbourhood report in a fixed structure from a postcode or place — map, crime, prices, planning, demographics, services — each figure sourced. Use with the local-data tools.
+requires: [run_python]
 ---
 # Local area brief
 
@@ -517,6 +530,7 @@ draft first, confirm, then send.
 const DATA_CLEANING_SKILL: &str = r##"---
 name: data-cleaning
 description: Clean and tidy a messy CSV/Excel dataset with pandas — types, dates, duplicates, missing values, standardised categories — and save the result. Use when data needs preparing before analysis.
+requires: [run_python]
 ---
 # Data cleaning
 
@@ -537,6 +551,7 @@ you changed — never silently discard data.
 const CHART_STYLING_SKILL: &str = r##"---
 name: chart-styling
 description: Apply a clean, consistent house style to matplotlib charts — colours, fonts, spacing, labels. Use when the user wants good-looking or on-brand charts.
+requires: [run_python]
 ---
 # Chart styling
 
@@ -647,6 +662,17 @@ mod tests {
         assert_eq!(s.name, "presentation");
         assert!(s.description.to_lowercase().contains("powerpoint"));
         assert!(s.body.contains("python-pptx"));
+    }
+
+    #[test]
+    fn requires_is_parsed_and_gates_instructions_only_skills() {
+        // A run_python skill declares its requirement; an instructions-only one requires nothing.
+        assert_eq!(parse_skill_md("presentation", PRESENTATION_SKILL).unwrap().requires, vec!["run_python"]);
+        assert!(parse_skill_md("citation-format", CITATION_FORMAT_SKILL).unwrap().requires.is_empty());
+        assert!(parse_skill_md("literature-review", LITERATURE_REVIEW_SKILL).unwrap().requires.is_empty());
+        // bracket + comma forms both parse
+        let s = parse_skill_md("x", "---\nname: x\ndescription: y\nrequires: [a, b]\n---\nbody here now").unwrap();
+        assert_eq!(s.requires, vec!["a", "b"]);
     }
 
     #[test]

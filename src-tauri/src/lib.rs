@@ -511,16 +511,21 @@ async fn send_message(
     let specs_snapshot: Vec<openapi::RegisteredSpec> = state.openapi_specs.lock().unwrap().clone();
     let sparql_snapshot: Vec<sparql::RegisteredSparqlEndpoint> = state.sparql_endpoints.lock().unwrap().clone();
     let allowed_dirs_snapshot: Vec<String> = state.allowed_dirs.lock().unwrap().clone();
-    // Skills are offered only when the code sandbox is available to execute them (the built-in
-    // skills need run_python), and narrowed to the active profile's enabled set (None = all).
-    let skills_snapshot: Vec<skills::RegisteredSkill> =
-        if args.tools.iter().any(|t| t.function.name == "run_python") {
-            let all = state.skills.lock().unwrap().clone();
-            match &args.enabled_skill_ids {
-                Some(ids) => all.into_iter().filter(|s| ids.contains(&s.id)).collect(),
-                None => all,
-            }
-        } else { Vec::new() };
+    // Offer a skill when (a) the active profile enables it (None = all) and (b) every tool it
+    // `requires` is available — so run_python skills need the sandbox, but instructions-only skills
+    // (citation-format, literature-review, …) show up anywhere.
+    let skills_snapshot: Vec<skills::RegisteredSkill> = {
+        let tool_names: std::collections::HashSet<&str> =
+            args.tools.iter().map(|t| t.function.name.as_str()).collect();
+        state.skills.lock().unwrap().iter()
+            .filter(|s| match &args.enabled_skill_ids {
+                Some(ids) => ids.contains(&s.id),
+                None => true,
+            })
+            .filter(|s| s.requires.iter().all(|r| tool_names.contains(r.as_str())))
+            .cloned()
+            .collect()
+    };
 
     let options = if args.temperature.is_some() || args.top_p.is_some() || args.top_k.is_some()
         || args.repeat_penalty.is_some() || args.seed.is_some()

@@ -19,7 +19,13 @@
       "style": "precise",
       "responseLength": "auto",
       "contextSize": "short"
-    }
+    },
+    "enabledSkillIds": [
+      "literature-review",
+      "citation-format",
+      "branded-report",
+      "plain-english"
+    ]
   },
   "toolRegistry": {
     "openapiSpecs": [

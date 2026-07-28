@@ -28,7 +28,15 @@
       "style": "precise",
       "responseLength": "auto",
       "contextSize": "short"
-    }
+    },
+    "enabledSkillIds": [
+      "local-area-brief",
+      "geospatial-map",
+      "spreadsheet-model",
+      "dashboard",
+      "branded-report",
+      "chart-styling"
+    ]
   },
   "toolRegistry": {
     "openapiSpecs": [
