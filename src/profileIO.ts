@@ -4,6 +4,10 @@ import type {
 } from "./AdminPanel";
 import { BUILTIN_OPENAPI_SPEC_IDS, BUILTIN_SPARQL_ENDPOINT_IDS } from "./AdminPanel";
 
+/** A custom skill bundled into a profile export so it travels with its content (built-ins don't
+ *  need bundling — they exist on every install and resolve by id). */
+export interface SkillBundle { id: string; name: string; description: string; requires?: string[]; body: string; resources?: { name: string; b64: string }[]; }
+
 // Envelope v2 bundles the profile AND the definitions of every API it enables, with all
 // secrets stripped, so an import wires the profile up identically on another machine.
 // v1 (profile only) is still accepted on import for back-compat.
@@ -16,6 +20,8 @@ export interface ProfileExportEnvelope {
     sparqlEndpoints: StoredSparqlEndpoint[];
     mcpServers: StoredMCPServer[];
   };
+  // Custom (non-built-in) skills the profile enables, bundled so they install on import.
+  skills?: SkillBundle[];
 }
 
 export interface ImportBundle {
@@ -23,6 +29,7 @@ export interface ImportBundle {
   openapiSpecs: StoredOpenAPISpec[];
   sparqlEndpoints: StoredSparqlEndpoint[];
   mcpServers: StoredMCPServer[];
+  skills: SkillBundle[];
 }
 
 /** Keep only non-secret auth fields (shape/URLs/usernames), never credentials. */
@@ -53,6 +60,9 @@ const stripServer = (m: StoredMCPServer): StoredMCPServer =>
 export function buildExportEnvelope(
   profile: Profile,
   registry: AppSettings["toolRegistry"],
+  // Pre-built custom-skill bundles (with resources) the caller prepared via export_skill_bundle.
+  // Built-ins are never bundled — they resolve by id on the target.
+  bundledSkills: SkillBundle[] = [],
 ): ProfileExportEnvelope {
   const specIds   = new Set(profile.enabledOpenapiSpecIds ?? []);
   const sparqlIds = new Set(profile.enabledSparqlEndpointIds ?? []);
@@ -81,6 +91,7 @@ export function buildExportEnvelope(
         .filter(m => mcpIds.has(m.id))
         .map(stripServer),
     },
+    ...(bundledSkills.length ? { skills: bundledSkills } : {}),
   };
 }
 
@@ -97,6 +108,7 @@ export function parseImport(raw: unknown): ImportBundle | null {
     openapiSpecs:    Array.isArray(reg.openapiSpecs)    ? reg.openapiSpecs    : [],
     sparqlEndpoints: Array.isArray(reg.sparqlEndpoints) ? reg.sparqlEndpoints : [],
     mcpServers:      Array.isArray(reg.mcpServers)      ? reg.mcpServers      : [],
+    skills:          Array.isArray(obj.skills)          ? (obj.skills as SkillBundle[]) : [],
   };
 }
 

@@ -789,10 +789,118 @@ fn get_allowed_dirs(state: State<'_, AppState>) -> Vec<String> {
     state.allowed_dirs.lock().unwrap().clone()
 }
 
-/// List the loaded skills (id, name, description, body). Phase 1: read-only, for inspection/UI.
+/// List the loaded skills (id, name, description, requires, body, builtin).
 #[tauri::command]
 fn get_skills(state: State<'_, AppState>) -> Vec<skills::RegisteredSkill> {
     state.skills.lock().unwrap().clone()
+}
+
+#[derive(Deserialize)]
+struct SaveSkillArgs {
+    id: String,
+    name: String,
+    description: String,
+    #[serde(default)] requires: Vec<String>,
+    body: String,
+}
+
+/// Create or update a CUSTOM skill (built-in ids are rejected). Returns the reloaded catalogue.
+#[tauri::command]
+fn save_skill(args: SaveSkillArgs, state: State<'_, AppState>) -> Result<Vec<skills::RegisteredSkill>, String> {
+    skills::write_skill(&args.id, &args.name, &args.description, &args.requires, &args.body)?;
+    let loaded = skills::load_skills();
+    *state.skills.lock().unwrap() = loaded.clone();
+    Ok(loaded)
+}
+
+/// Delete a custom skill (built-ins can't be deleted). Returns the reloaded catalogue.
+#[tauri::command]
+fn delete_skill(id: String, state: State<'_, AppState>) -> Result<Vec<skills::RegisteredSkill>, String> {
+    skills::delete_skill(&id)?;
+    let loaded = skills::load_skills();
+    *state.skills.lock().unwrap() = loaded.clone();
+    Ok(loaded)
+}
+
+#[derive(Deserialize, Serialize, Default)]
+struct ResourceBlob { name: String, b64: String }
+
+#[derive(Deserialize)]
+struct ImportSkillArgs {
+    #[serde(default)] id: Option<String>,
+    name: String,
+    description: String,
+    #[serde(default)] requires: Vec<String>,
+    body: String,
+    #[serde(default)] resources: Vec<ResourceBlob>,
+}
+
+/// Install a custom skill from an imported profile bundle (with any resource files). Idempotent when
+/// the same id+body already exists (reuses it); otherwise picks a free, filesystem-safe id. Returns
+/// the final id so the caller can remap the profile's enabledSkillIds. Built-in ids are never written.
+#[tauri::command]
+fn import_skill(args: ImportSkillArgs, state: State<'_, AppState>) -> Result<String, String> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+    let existing = state.skills.lock().unwrap().clone();
+    // Re-importing the identical skill (same id + body) is a no-op — reuse it.
+    if let Some(want) = args.id.as_deref() {
+        if let Some(s) = existing.iter().find(|s| s.id == want && !s.builtin) {
+            if s.body.trim() == args.body.trim() { return Ok(s.id.clone()); }
+        }
+    }
+    let ids: Vec<String> = existing.iter().map(|s| s.id.clone()).collect();
+    let id = match args.id.as_deref() {
+        Some(i) if !i.trim().is_empty() && !skills::is_builtin(i) && !ids.iter().any(|e| e == i) => i.trim().to_string(),
+        _ => skills::unique_skill_id(&args.name, &ids),
+    };
+    skills::write_skill(&id, &args.name, &args.description, &args.requires, &args.body)?;
+    for r in &args.resources {
+        if let Ok(bytes) = B64.decode(r.b64.trim()) {
+            let _ = skills::add_resource(&id, &r.name, &bytes); // best-effort; skip a bad resource
+        }
+    }
+    *state.skills.lock().unwrap() = skills::load_skills();
+    Ok(id)
+}
+
+#[derive(Deserialize)]
+struct AddResourceArgs { id: String, name: String, b64: String }
+
+/// Upload a resource file into a custom skill's folder. Returns the reloaded catalogue.
+#[tauri::command]
+fn add_skill_resource(args: AddResourceArgs, state: State<'_, AppState>) -> Result<Vec<skills::RegisteredSkill>, String> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+    let bytes = B64.decode(args.b64.trim()).map_err(|e| format!("bad file data: {e}"))?;
+    skills::add_resource(&args.id, &args.name, &bytes)?;
+    let loaded = skills::load_skills();
+    *state.skills.lock().unwrap() = loaded.clone();
+    Ok(loaded)
+}
+
+#[derive(Deserialize)]
+struct RemoveResourceArgs { id: String, name: String }
+
+/// Delete a resource file from a custom skill. Returns the reloaded catalogue.
+#[tauri::command]
+fn remove_skill_resource(args: RemoveResourceArgs, state: State<'_, AppState>) -> Result<Vec<skills::RegisteredSkill>, String> {
+    skills::remove_resource(&args.id, &args.name)?;
+    let loaded = skills::load_skills();
+    *state.skills.lock().unwrap() = loaded.clone();
+    Ok(loaded)
+}
+
+/// Full skill bundle (fields + resource files as base64) for embedding in a profile export.
+#[tauri::command]
+fn export_skill_bundle(id: String, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+    let s = state.skills.lock().unwrap().iter().find(|s| s.id == id).cloned()
+        .ok_or_else(|| format!("skill '{id}' not found"))?;
+    let resources: Vec<ResourceBlob> = s.resources.iter().filter_map(|r|
+        skills::read_resource(&id, r).ok().map(|b| ResourceBlob { name: r.clone(), b64: B64.encode(&b) })).collect();
+    Ok(serde_json::json!({
+        "id": s.id, "name": s.name, "description": s.description,
+        "requires": s.requires, "body": s.body, "resources": resources,
+    }))
 }
 
 #[tauri::command]
@@ -878,6 +986,15 @@ fn save_data_url(args: SaveDataUrlArgs) -> Result<(), String> {
 #[tauri::command]
 fn read_file_text(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+/// Read any file's bytes as base64 (for uploading a skill resource). Capped to protect memory.
+#[tauri::command]
+fn read_file_base64(path: String) -> Result<String, String> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    if bytes.len() > 25 * 1024 * 1024 { return Err("file is too large (max 25 MB)".into()); }
+    Ok(B64.encode(&bytes))
 }
 
 #[tauri::command]
@@ -1985,6 +2102,12 @@ pub fn run() {
             respond_code_permission,
             set_code_exec_unlocked,
             get_skills,
+            save_skill,
+            delete_skill,
+            import_skill,
+            add_skill_resource,
+            remove_skill_resource,
+            export_skill_bundle,
             respond_python_result,
             save_pending_outputs,
             call_tool_from_code,
@@ -1993,6 +2116,7 @@ pub fn run() {
             open_html_in_browser,
             write_file_text,
             read_file_text,
+            read_file_base64,
             read_image_data_url,
             save_document,
             save_data_url,

@@ -642,6 +642,15 @@ fn tool_results_dir() -> std::path::PathBuf {
     dir
 }
 
+/// Per-run staging area for skill resource files. `use_skill` copies a loaded skill's resources
+/// here; `stage_python_files` then routes them into /work/skills/ (not /work/data/) so run_python
+/// can read a template/helper the skill ships with.
+fn skill_staging_dir() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join("lexichat-skill-resources");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 /// Best-effort removal of offloaded result files older than a few hours, so the dir doesn't grow.
 fn clean_tool_results(dir: &std::path::Path) {
     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -1221,12 +1230,17 @@ pub async fn agent_loop<R: tauri::Runtime>(
     // Oversized tool results are offloaded here for run_python to read (interactive chat only —
     // jobs can't run code). run_python is given read access to this dir via dispatch_paths.
     let results_dir = tool_results_dir();
+    // Skill resources loaded via use_skill are copied here and staged into /work/skills for run_python.
+    let skill_staging = skill_staging_dir();
     let dispatch_paths: Vec<String> = if silent {
         sandbox_paths.clone()
     } else {
         clean_tool_results(&results_dir);
+        let _ = std::fs::remove_dir_all(&skill_staging); // clear any resources from a previous run
+        let _ = std::fs::create_dir_all(&skill_staging);
         let mut v = sandbox_paths.clone();
         v.push(results_dir.to_string_lossy().into_owned());
+        v.push(skill_staging.to_string_lossy().into_owned());
         v
     };
     // Tools the model called last step — kept available next step so a multi-step chain
@@ -1604,7 +1618,26 @@ pub async fn agent_loop<R: tauri::Runtime>(
                 let result = match skills.iter()
                     .find(|s| s.name.eq_ignore_ascii_case(want) || s.id.eq_ignore_ascii_case(want))
                 {
-                    Some(s) => format!("SKILL: {}\n\n{}\n\n(Now follow these instructions to complete the task.)", s.name, s.body),
+                    Some(s) => {
+                        // Stage the skill's bundled resources into /work/skills (interactive only —
+                        // jobs can't run code). They land in the staging dir already in dispatch_paths.
+                        let mut note = String::new();
+                        if !silent && !s.resources.is_empty() {
+                            let dir = skill_staging_dir();
+                            let mut staged = Vec::new();
+                            for src in crate::skills::skill_resource_paths(s) {
+                                if let Some(fname) = src.file_name() {
+                                    if std::fs::copy(&src, dir.join(fname)).is_ok() {
+                                        staged.push(format!("/work/skills/{}", fname.to_string_lossy()));
+                                    }
+                                }
+                            }
+                            if !staged.is_empty() {
+                                note = format!("\n\nBundled resources are available to run_python at: {}.", staged.join(", "));
+                            }
+                        }
+                        format!("SKILL: {}\n\n{}{}\n\n(Now follow these instructions to complete the task.)", s.name, s.body, note)
+                    }
                     None => format!("No skill named \"{want}\". Available skills: {}.",
                         skills.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")),
                 };
@@ -2040,15 +2073,17 @@ fn stage_python_files(sandbox_paths: &[String]) -> Vec<serde_json::Value> {
                 files.push(serde_json::json!({ "path": format!("uploads/{name}"), "b64": B64.encode(&bytes) }));
             }
         } else if path.is_dir() {
-            // The offloaded-results dir → /work/data, so run_python can read a large tool result
-            // that was too big to fit in context (see offload_tool_result's nudge).
+            // A staged dir → /work/data, EXCEPT the skill-resources dir which goes to /work/skills so
+            // a skill's bundled template/helper is where its instructions say. The offloaded-results
+            // dir → /work/data, so run_python can read a large tool result that didn't fit in context.
+            let dest_prefix = if path == skill_staging_dir() { "skills" } else { "data" };
             if let Ok(entries) = std::fs::read_dir(path) {
                 for e in entries.flatten() {
                     let ep = e.path();
                     if !ep.is_file() { continue; }
                     let name = match ep.file_name().and_then(|n| n.to_str()) { Some(n) => n, None => continue };
                     if let Ok(bytes) = std::fs::read(&ep) {
-                        files.push(serde_json::json!({ "path": format!("data/{name}"), "b64": B64.encode(&bytes) }));
+                        files.push(serde_json::json!({ "path": format!("{dest_prefix}/{name}"), "b64": B64.encode(&bytes) }));
                     }
                 }
             }

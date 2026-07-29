@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { buildExportEnvelope, parseImport, mergeImport } from "./profileIO";
+import { buildExportEnvelope, parseImport, mergeImport, type SkillBundle } from "./profileIO";
 import { ChatParams, DEFAULT_CHAT_PARAMS, ChatParamsDefaults, AdvancedParamsContent } from "./ChatParamsPanel";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -241,7 +241,7 @@ interface Props {
 type Tab = "profiles" | "tools" | "skills" | "models" | "openapi" | "sparql" | "mcp" | "sandbox" | "server" | "defaults";
 
 /** A loaded skill, from the `get_skills` command. */
-interface SkillInfo { id: string; name: string; description: string; body?: string; }
+export interface SkillInfo { id: string; name: string; description: string; requires?: string[]; body?: string; builtin?: boolean; resources?: string[]; }
 
 const BUILTIN_TOOLS = [
   { name: "list_files",          label: "List Files",           icon: "📁" },
@@ -389,6 +389,9 @@ function ProfilesTab({ settings, onChange }: { settings: AppSettings; onChange: 
   );
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Profile | null>(null);
+  // Skill catalogue — needed so an export can bundle the profile's custom (non-built-in) skills.
+  const [allSkills, setAllSkills] = useState<SkillInfo[]>([]);
+  useEffect(() => { invoke<SkillInfo[]>("get_skills").then(setAllSkills).catch(() => {}); }, []);
 
   const selected = settings.profiles.find(p => p.id === selectedId) ?? null;
 
@@ -452,7 +455,12 @@ function ProfilesTab({ settings, onChange }: { settings: AppSettings; onChange: 
   const [importSummary, setImportSummary] = useState<string[]>([]);
 
   const exportProfile = async (profile: Profile) => {
-    const envelope = buildExportEnvelope(profile, settings.toolRegistry);
+    // Bundle the profile's CUSTOM skills (with their resource files) — built-ins resolve by id.
+    const customIds = (profile.enabledSkillIds ?? []).filter(id => allSkills.some(s => s.id === id && !s.builtin));
+    const bundledSkills = await Promise.all(
+      customIds.map(id => invoke<SkillBundle>("export_skill_bundle", { id }).catch(() => null))
+    ).then(list => list.filter((b): b is SkillBundle => !!b));
+    const envelope = buildExportEnvelope(profile, settings.toolRegistry, bundledSkills);
     const json = JSON.stringify(envelope, null, 2);
     const defaultName = profile.name.replace(/[^a-z0-9_-]/gi, "_").toLowerCase();
     const path = await save({
@@ -474,11 +482,30 @@ function ProfilesTab({ settings, onChange }: { settings: AppSettings; onChange: 
     try { parsed = JSON.parse(raw); } catch { setImportError("File is not valid JSON."); return; }
     const bundle = parseImport(parsed);
     if (!bundle) { setImportError("Not a valid LexiChat profile file."); return; }
+    // Install any bundled CUSTOM skills to disk first; import_skill returns the final id (it may
+    // differ on a collision), so remap the profile's enabledSkillIds onto the installed ids.
+    const skillWarnings: string[] = [];
+    if (bundle.skills.length) {
+      const remap: Record<string, string> = {};
+      for (const s of bundle.skills) {
+        try {
+          const finalId = await invoke<string>("import_skill", { args: {
+            id: s.id, name: s.name, description: s.description, requires: s.requires ?? [], body: s.body,
+            resources: s.resources ?? [],
+          } });
+          if (finalId !== s.id) remap[s.id] = finalId;
+        } catch (e) { skillWarnings.push(`Skill "${s.name}" couldn't be installed: ${e}`); }
+      }
+      if (Object.keys(remap).length && bundle.profile.enabledSkillIds) {
+        bundle.profile.enabledSkillIds = bundle.profile.enabledSkillIds.map(id => remap[id] ?? id);
+      }
+      setAllSkills(await invoke<SkillInfo[]>("get_skills").catch(() => allSkills));
+    }
     // Bundles the profile's APIs into the registry, re-links, and reports what still needs setup.
     const result = mergeImport(bundle, settings, uid());
     onChange(result.settings);
     setSelectedId(result.profileId);
-    setImportSummary(result.warnings);
+    setImportSummary([...result.warnings, ...skillWarnings]);
   };
 
   const d = draft;
@@ -2132,40 +2159,173 @@ function MCPTab({ stored, onChange }: { stored: StoredMCPServer[]; onChange: (s:
 }
 
 // ── Skills tab ────────────────────────────────────────────────────────────────
-// Skills are on-demand capability recipes (the model loads one via use_skill). Built-ins are seeded
-// by the backend; here you choose which the ACTIVE profile surfaces. undefined enabledSkillIds = all.
-function SkillsTab({ skills, profile, onToggle }:
-  { skills: SkillInfo[]; profile: Profile | null; onToggle: (id: string, on: boolean) => void }) {
+// Skills are on-demand capability recipes (the model loads one via use_skill). Built-ins are
+// app-managed (re-seeded, read-only — duplicate to edit); custom skills can be created/edited/deleted.
+// Per active profile you also choose which surface (undefined enabledSkillIds = all).
+type SkillDraft = { id: string; name: string; description: string; needsPython: boolean; body: string; isNew: boolean };
+const skillSlug = (name: string) => name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "skill";
+const uniqueSkillId = (base: string, taken: string[]) => {
+  if (!taken.includes(base)) return base;
+  let n = 2; while (taken.includes(`${base}-${n}`)) n++; return `${base}-${n}`;
+};
+
+function SkillsTab({ skills, profile, onToggle, onReload }:
+  { skills: SkillInfo[]; profile: Profile | null; onToggle: (id: string, on: boolean) => void; onReload: () => void }) {
+  const [editing, setEditing] = useState<SkillDraft | null>(null);
+  const [viewing, setViewing] = useState<SkillInfo | null>(null);
   const enabled = profile ? new Set(profile.enabledSkillIds ?? skills.map(s => s.id)) : new Set(skills.map(s => s.id));
+
+  const save = async () => {
+    if (!editing || !editing.name.trim()) return;
+    const id = editing.isNew ? uniqueSkillId(skillSlug(editing.name), skills.map(s => s.id)) : editing.id;
+    try {
+      await invoke("save_skill", { args: {
+        id, name: editing.name.trim(), description: editing.description.trim(),
+        requires: editing.needsPython ? ["run_python"] : [], body: editing.body,
+      } });
+      setEditing(null); onReload();
+    } catch (e) { alert(`Couldn't save skill: ${e}`); }
+  };
+  const del = async (id: string, name: string) => {
+    if (!confirm(`Delete the "${name}" skill? This can't be undone.`)) return;
+    try { await invoke("delete_skill", { id }); onReload(); } catch (e) { alert(`Couldn't delete: ${e}`); }
+  };
+  const addResource = async (skillId: string) => {
+    const path = await open({ multiple: false, title: "Add resource file" });
+    if (typeof path !== "string") return;
+    const name = path.split(/[/\\]/).pop() || "file";
+    try {
+      const b64 = await invoke<string>("read_file_base64", { path });
+      await invoke("add_skill_resource", { args: { id: skillId, name, b64 } });
+      onReload();
+    } catch (e) { alert(`Couldn't add resource: ${e}`); }
+  };
+  const removeResource = async (skillId: string, name: string) => {
+    try { await invoke("remove_skill_resource", { args: { id: skillId, name } }); onReload(); } catch (e) { alert(String(e)); }
+  };
+  const editCustom = (s: SkillInfo) => setEditing({ id: s.id, name: s.name, description: s.description, needsPython: !!s.requires?.includes("run_python"), body: s.body ?? "", isNew: false });
+  const duplicate  = (s: SkillInfo) => setEditing({ id: "", name: `${s.name} copy`, description: s.description, needsPython: !!s.requires?.includes("run_python"), body: s.body ?? "", isNew: true });
+  const blank = (): SkillDraft => ({ id: "", name: "", description: "", needsPython: true, body: "# How to do it\n\nDescribe the exact steps here. Save any output to /work/out/.\n", isNew: true });
+
+  if (viewing) {
+    return (
+      <div className="admin-scroll">
+        <section className="admin-section">
+          <div className="admin-section-header" style={{ justifyContent: "space-between" }}>
+            <span><span className="admin-section-icon">👁</span> <span className="admin-section-title" style={{ fontFamily: "monospace" }}>{viewing.name}</span></span>
+            <button className="link-btn" onClick={() => setViewing(null)}>← Back</button>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: 4 }}>
+            <div className="admin-row-sub">{viewing.description}</div>
+            <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+              {viewing.builtin && "Built-in · "}
+              {viewing.requires?.length ? `Requires: ${viewing.requires.join(", ")}` : "No tool requirements (works anywhere)"}
+              {viewing.resources?.length ? ` · Resources: ${viewing.resources.join(", ")}` : ""}
+            </div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.04em" }}>Instructions</div>
+            <pre style={{ margin: 0, maxHeight: 360, overflow: "auto", padding: "10px 12px", fontSize: 12, lineHeight: 1.5, background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)", fontFamily: "'SF Mono','Fira Code',monospace", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{viewing.body || "(no instructions)"}</pre>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="btn" onClick={() => setViewing(null)}>Close</button>
+              <button className="btn primary" onClick={() => { const s = viewing; setViewing(null); duplicate(s); }}>Duplicate to edit</button>
+            </div>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  if (editing) {
+    return (
+      <div className="admin-scroll">
+        <section className="admin-section">
+          <div className="admin-section-header">
+            <span className="admin-section-icon">📝</span>
+            <span className="admin-section-title">{editing.isNew ? "NEW SKILL" : `EDIT: ${editing.id}`}</span>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: 4 }}>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span className="admin-row-title">Name</span>
+              <input className="admin-input" value={editing.name} placeholder="gantt-chart"
+                onChange={e => setEditing({ ...editing, name: e.target.value })} />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span className="admin-row-title">Description <span style={{ fontWeight: 400, color: "var(--text-tertiary)" }}>(the only line the model always sees — make it specific)</span></span>
+              <input className="admin-input" value={editing.description} placeholder="Build a Gantt chart from a task list with start/end dates. Use for project timelines."
+                onChange={e => setEditing({ ...editing, description: e.target.value })} />
+            </label>
+            <label className="admin-row" style={{ cursor: "pointer", padding: "2px 0" }}>
+              <input type="checkbox" className="admin-checkbox" checked={editing.needsPython}
+                onChange={e => setEditing({ ...editing, needsPython: e.target.checked })} />
+              <div className="admin-row-text">
+                <span className="admin-row-title">Needs the Run Python sandbox</span>
+                <span className="admin-row-sub">Tick if the recipe runs code (builds files, charts, maps). Leave off for writing-only skills so they work anywhere.</span>
+              </div>
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span className="admin-row-title">Instructions (Markdown)</span>
+              <textarea value={editing.body} onChange={e => setEditing({ ...editing, body: e.target.value })}
+                spellCheck={false} rows={14}
+                style={{ width: "100%", padding: "8px 10px", fontSize: 12, lineHeight: 1.5, background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)", fontFamily: "'SF Mono','Fira Code',monospace", resize: "vertical" }} />
+            </label>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <span className="admin-row-title">Resource files <span style={{ fontWeight: 400, color: "var(--text-tertiary)" }}>— a template or helper; staged into <span style={{ fontFamily: "monospace" }}>/work/skills/</span> when the skill runs</span></span>
+              {editing.isNew
+                ? <span className="admin-row-sub" style={{ fontStyle: "italic" }}>Save the skill first, then re-open it to attach resource files.</span>
+                : <>
+                    {(skills.find(s => s.id === editing.id)?.resources ?? []).map(r => (
+                      <div key={r} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                        <span style={{ fontFamily: "monospace" }}>📎 {r}</span>
+                        <button className="link-btn" style={{ color: "var(--danger, #dc2626)" }} onClick={() => removeResource(editing.id, r)}>remove</button>
+                      </div>
+                    ))}
+                    {(skills.find(s => s.id === editing.id)?.resources ?? []).length === 0 && <span className="admin-row-sub">No resource files yet.</span>}
+                    <button className="btn" style={{ alignSelf: "flex-start" }} onClick={() => addResource(editing.id)}>+ Add file</button>
+                  </>}
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="btn" onClick={() => setEditing(null)}>Cancel</button>
+              <button className="btn primary" disabled={!editing.name.trim() || !editing.description.trim()} onClick={save}>Save skill</button>
+            </div>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="admin-scroll">
       <section className="admin-section">
-        <div className="admin-section-header">
-          <span className="admin-section-icon">📚</span>
-          <span className="admin-section-title">SKILLS</span>
+        <div className="admin-section-header" style={{ justifyContent: "space-between" }}>
+          <span><span className="admin-section-icon">📚</span> <span className="admin-section-title">SKILLS</span></span>
+          <button className="btn" onClick={() => setEditing(blank())}>+ New skill</button>
         </div>
         <div className="admin-row-sub" style={{ padding: "0 4px 10px" }}>
-          On-demand recipes the model loads with <span style={{ fontFamily: "monospace" }}>use_skill</span> when a task calls for one — only their one-line descriptions sit in the prompt. Skills need the <strong>Run Python</strong> tool.{" "}
-          {profile ? <>Choose which ones <strong>{profile.name}</strong> offers.</> : <>Select a profile (Profiles tab → Set Active) to control which it offers; all are available by default.</>}
+          On-demand recipes the model loads with <span style={{ fontFamily: "monospace" }}>use_skill</span> when a task calls for one — only their one-line descriptions sit in the prompt.{" "}
+          {profile ? <>Tick which ones <strong>{profile.name}</strong> offers.</> : <>Set a profile active (Profiles tab) to choose which it offers; all are available by default.</>}
         </div>
-        {skills.length === 0 && (
-          <div className="admin-row-sub" style={{ padding: 8 }}>No skills loaded.</div>
-        )}
+        {skills.length === 0 && <div className="admin-row-sub" style={{ padding: 8 }}>No skills loaded.</div>}
         {skills.map(s => (
-          <label key={s.id} className="admin-row" style={{ cursor: profile ? "pointer" : "default", alignItems: "flex-start" }}>
-            <input
-              type="checkbox"
-              className="admin-checkbox"
-              disabled={!profile}
-              checked={enabled.has(s.id)}
-              onChange={e => onToggle(s.id, e.target.checked)}
-              style={{ marginTop: 3 }}
-            />
-            <div className="admin-row-text">
-              <span className="admin-row-title" style={{ fontFamily: "monospace" }}>{s.name}</span>
+          <div key={s.id} className="admin-row" style={{ alignItems: "flex-start", gap: 8 }}>
+            <input type="checkbox" className="admin-checkbox" disabled={!profile} checked={enabled.has(s.id)}
+              onChange={e => onToggle(s.id, e.target.checked)} style={{ marginTop: 3 }} title={profile ? "Offer this skill in the active profile" : "Set a profile active to toggle"} />
+            <div className="admin-row-text" style={{ flex: 1 }}>
+              <span className="admin-row-title" style={{ fontFamily: "monospace" }}>
+                {s.name}
+                {s.builtin && <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 600, color: "var(--purple)", background: "var(--purple-bg)", border: "1px solid var(--purple-border)", borderRadius: 4, padding: "1px 4px", fontFamily: "system-ui" }}>BUILT-IN</span>}
+                {!!s.requires?.includes("run_python") && <span style={{ marginLeft: 6, fontSize: 9, color: "var(--text-tertiary)", fontFamily: "system-ui" }}>🐍 needs Python</span>}
+              </span>
               <span className="admin-row-sub">{s.description}</span>
             </div>
-          </label>
+            <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+              <button className="link-btn" onClick={() => setViewing(s)} title="See the full recipe (read-only)">View</button>
+              {s.builtin
+                ? <button className="link-btn" onClick={() => duplicate(s)} title="Copy to a new editable skill">Duplicate</button>
+                : <>
+                    <button className="link-btn" onClick={() => editCustom(s)}>Edit</button>
+                    <button className="link-btn" style={{ color: "var(--danger, #dc2626)" }} onClick={() => del(s.id, s.name)}>Delete</button>
+                  </>}
+            </div>
+          </div>
         ))}
       </section>
     </div>
@@ -2377,7 +2537,8 @@ export function AdminPanel({ settings, onSave, onClose }: Props) {
   // Skills are loaded from disk by the backend (built-ins seeded there); fetch the catalogue for the
   // Skills tab. Per-profile enablement: undefined = all; a list = only those.
   const [availableSkills, setAvailableSkills] = useState<SkillInfo[]>([]);
-  useEffect(() => { invoke<SkillInfo[]>("get_skills").then(setAvailableSkills).catch(() => {}); }, []);
+  const reloadSkills = () => invoke<SkillInfo[]>("get_skills").then(setAvailableSkills).catch(() => {});
+  useEffect(() => { reloadSkills(); }, []);
   const toggleSkill = (skillId: string, on: boolean) => {
     if (!activeProfile) return;
     setDraft(d => ({ ...d, profiles: d.profiles.map(p => {
@@ -2482,7 +2643,7 @@ export function AdminPanel({ settings, onSave, onClose }: Props) {
         <div className="admin-content">
           {tab === "profiles" && <ProfilesTab settings={draft} onChange={setDraft} />}
           {tab === "tools"   && <ToolsTab   settings={draft} onChange={setDraft} />}
-          {tab === "skills"  && <SkillsTab  skills={availableSkills} profile={activeProfile} onToggle={toggleSkill} />}
+          {tab === "skills"  && <SkillsTab  skills={availableSkills} profile={activeProfile} onToggle={toggleSkill} onReload={reloadSkills} />}
           {tab === "models"  && <ModelsTab  settings={draft} onChange={setDraft} />}
           {tab === "openapi" && <OpenAPITab stored={ctxOpenAPI} onChange={setCtxOpenAPI} />}
           {tab === "sparql"  && <SparqlTab stored={ctxSparql} onChange={setCtxSparql} />}

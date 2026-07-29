@@ -22,6 +22,105 @@ pub struct RegisteredSkill {
     /// The markdown instructions body — returned to the model by `use_skill`, not in the base prompt.
     #[serde(default)]
     pub body: String,
+    /// True for app-shipped skills (re-seeded from constants, not editable in place). Set at load.
+    #[serde(default)]
+    pub builtin: bool,
+    /// Resource filenames bundled with the skill (a template, a helper module). Staged into
+    /// /work/skills/ when the skill is loaded so run_python can read them. Set at load.
+    #[serde(default)]
+    pub resources: Vec<String>,
+}
+
+pub fn skill_dir(id: &str) -> PathBuf {
+    skills_dir().join(id)
+}
+
+/// Reject path-traversal / nested names in a resource filename.
+fn safe_resource_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name == "." || name == ".."
+        || name.eq_ignore_ascii_case("SKILL.md")
+    {
+        return Err(format!("invalid resource name '{name}'"));
+    }
+    Ok(name.to_string())
+}
+
+/// Full disk paths of a skill's resource files (for staging into the sandbox).
+pub fn skill_resource_paths(s: &RegisteredSkill) -> Vec<PathBuf> {
+    s.resources.iter().map(|r| skill_dir(&s.id).join(r)).collect()
+}
+
+pub fn add_resource(id: &str, name: &str, bytes: &[u8]) -> Result<(), String> {
+    if is_builtin(id) { return Err("resources can't be added to a built-in skill — duplicate it first".into()); }
+    let name = safe_resource_name(name)?;
+    let dir = skill_dir(id);
+    if !dir.exists() { return Err(format!("skill '{id}' doesn't exist — save it first")); }
+    std::fs::write(dir.join(name), bytes).map_err(|e| e.to_string())
+}
+
+pub fn remove_resource(id: &str, name: &str) -> Result<(), String> {
+    if is_builtin(id) { return Err("can't modify a built-in skill".into()); }
+    let name = safe_resource_name(name)?;
+    let f = skill_dir(id).join(name);
+    if f.exists() { std::fs::remove_file(&f).map_err(|e| e.to_string())?; }
+    Ok(())
+}
+
+pub fn read_resource(id: &str, name: &str) -> Result<Vec<u8>, String> {
+    let name = safe_resource_name(name)?;
+    std::fs::read(skill_dir(id).join(name)).map_err(|e| e.to_string())
+}
+
+/// Whether an id belongs to an app-shipped (built-in) skill.
+pub fn is_builtin(id: &str) -> bool {
+    BUILTIN_SKILLS.iter().any(|(bid, _)| *bid == id)
+}
+
+/// Serialise a skill's fields back into `SKILL.md` text (frontmatter + body).
+fn to_skill_md(name: &str, description: &str, requires: &[String], body: &str) -> String {
+    let mut s = String::from("---\n");
+    s.push_str(&format!("name: {}\n", name.trim()));
+    s.push_str(&format!("description: {}\n", description.trim().replace('\n', " ")));
+    if !requires.is_empty() {
+        s.push_str(&format!("requires: [{}]\n", requires.join(", ")));
+    }
+    s.push_str("---\n");
+    s.push_str(body.trim_start());
+    if !s.ends_with('\n') { s.push('\n'); }
+    s
+}
+
+/// Write a custom skill's `SKILL.md` to disk (creating its folder). Built-in ids are rejected —
+/// they're re-seeded from constants each launch, so a custom skill must use its own id.
+pub fn write_skill(id: &str, name: &str, description: &str, requires: &[String], body: &str) -> Result<(), String> {
+    let id = id.trim();
+    if id.is_empty() { return Err("skill id is empty".into()); }
+    if is_builtin(id) { return Err(format!("'{id}' is a built-in skill and can't be overwritten — duplicate it to a new id instead")); }
+    let dir = skills_dir().join(id);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("SKILL.md"), to_skill_md(name, description, requires, body)).map_err(|e| e.to_string())
+}
+
+/// Delete a custom skill's folder. Built-ins can't be deleted.
+pub fn delete_skill(id: &str) -> Result<(), String> {
+    if is_builtin(id) { return Err(format!("'{id}' is a built-in skill and can't be deleted")); }
+    let dir = skills_dir().join(id);
+    if dir.exists() { std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?; }
+    Ok(())
+}
+
+/// Turn a display name into a filesystem-safe skill id, avoiding collisions with existing ids.
+pub fn unique_skill_id(name: &str, existing: &[String]) -> String {
+    let base: String = name.trim().to_lowercase().chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-').filter(|s| !s.is_empty()).collect::<Vec<_>>().join("-");
+    let base = if base.is_empty() { "skill".to_string() } else { base };
+    if !existing.iter().any(|e| e == &base) && !is_builtin(&base) { return base; }
+    (2..).map(|n| format!("{base}-{n}"))
+        .find(|c| !existing.iter().any(|e| e == c) && !is_builtin(c))
+        .unwrap()
 }
 
 pub fn skills_dir() -> PathBuf {
@@ -50,7 +149,7 @@ pub fn parse_skill_md(id: &str, text: &str) -> Option<RegisteredSkill> {
         }
     }
     if name.is_empty() { name = id.to_string(); }
-    Some(RegisteredSkill { id: id.to_string(), name, description, requires, body })
+    Some(RegisteredSkill { id: id.to_string(), name, description, requires, body, builtin: is_builtin(id), resources: Vec::new() })
 }
 
 /// Load every skill from disk (each direct subdirectory of the skills dir with a `SKILL.md`).
@@ -61,7 +160,19 @@ pub fn load_skills() -> Vec<RegisteredSkill> {
             if !e.path().is_dir() { continue; }
             let id = e.file_name().to_string_lossy().into_owned();
             if let Ok(text) = std::fs::read_to_string(e.path().join("SKILL.md")) {
-                if let Some(s) = parse_skill_md(&id, &text) { out.push(s); }
+                if let Some(mut s) = parse_skill_md(&id, &text) {
+                    // Any other file in the skill folder is a resource (a template, helper module…).
+                    if let Ok(files) = std::fs::read_dir(e.path()) {
+                        let mut res: Vec<String> = files.flatten()
+                            .filter(|f| f.path().is_file())
+                            .filter_map(|f| f.file_name().to_str().map(String::from))
+                            .filter(|n| n != "SKILL.md")
+                            .collect();
+                        res.sort();
+                        s.resources = res;
+                    }
+                    out.push(s);
+                }
             }
         }
     }
@@ -662,6 +773,26 @@ mod tests {
         assert_eq!(s.name, "presentation");
         assert!(s.description.to_lowercase().contains("powerpoint"));
         assert!(s.body.contains("python-pptx"));
+    }
+
+    #[test]
+    fn to_skill_md_round_trips_through_the_parser() {
+        let md = to_skill_md("my-skill", "Does a thing.", &["run_python".into()], "# How\nStep one.\n");
+        let s = parse_skill_md("my-skill", &md).unwrap();
+        assert_eq!(s.name, "my-skill");
+        assert_eq!(s.description, "Does a thing.");
+        assert_eq!(s.requires, vec!["run_python"]);
+        assert!(s.body.starts_with("# How"));
+        // no requires line when empty
+        assert!(!to_skill_md("x", "y", &[], "body").contains("requires:"));
+    }
+
+    #[test]
+    fn unique_skill_id_slugs_and_avoids_collisions() {
+        assert_eq!(unique_skill_id("Gantt Chart!", &[]), "gantt-chart");
+        assert_eq!(unique_skill_id("Gantt Chart", &["gantt-chart".into()]), "gantt-chart-2");
+        // never collides with a built-in id
+        assert_ne!(unique_skill_id("presentation", &[]), "presentation");
     }
 
     #[test]
