@@ -128,7 +128,12 @@ function imageDataUrl(name, b64) {
   return mime ? `data:${mime};base64,${b64}` : null;
 }
 
-// Collect files the model wrote under /work/out.
+// /work/out files already surfaced this turn (name → byte length). Since /work persists across
+// calls within a turn now, this stops an earlier call's output being re-emitted by a later one.
+// Cleared on reset (new turn).
+let emittedOut = new Map();
+
+// Collect files the model wrote under /work/out (only ones new or changed since the last call).
 function collectOutputs() {
   const out = [];
   const walk = (dir) => {
@@ -137,16 +142,23 @@ function collectOutputs() {
     for (const e of entries) {
       const full = dir + "/" + e;
       const st = pyodide.FS.stat(full);
-      if (pyodide.FS.isDir(st.mode)) walk(full);
-      else out.push({ name: full.slice("/work/out/".length), b64: bytesToB64(pyodide.FS.readFile(full)) });
+      if (pyodide.FS.isDir(st.mode)) { walk(full); continue; }
+      const bytes = pyodide.FS.readFile(full);
+      const name = full.slice("/work/out/".length);
+      if (emittedOut.get(name) === bytes.length) continue; // already surfaced this turn, unchanged
+      emittedOut.set(name, bytes.length);
+      out.push({ name, b64: bytesToB64(bytes) });
     }
   };
   walk("/work/out");
   return out;
 }
 
-async function run(code, files) {
-  resetWorkspace();
+async function run(code, files, reset) {
+  // Wipe /work only on the first call of a turn (reset=true). Later calls keep whatever the earlier
+  // ones wrote (e.g. chart PNGs) so multi-step workflows don't lose intermediate files.
+  if (reset !== false) { resetWorkspace(); emittedOut.clear(); }
+  else for (const d of ["/work", "/work/uploads", "/work/data", "/work/out"]) mkdirp(d);
   for (const f of files || []) {
     const path = "/work/" + f.path.replace(/^\/+/, "");
     mkdirp(path.slice(0, path.lastIndexOf("/")));
@@ -205,7 +217,7 @@ onmessage = async (ev) => {
   if (msg.type !== "run") return;
   try {
     if (!ready) await initPromise;
-    const res = await run(msg.code, msg.files);
+    const res = await run(msg.code, msg.files, msg.reset);
     postMessage({ type: "result", id: msg.id, ...res });
   } catch (e) {
     postMessage({ type: "result", id: msg.id, output: "", images: [], outFiles: [],

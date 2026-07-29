@@ -1250,6 +1250,9 @@ pub async fn agent_loop<R: tauri::Runtime>(
     // re-issues the identical script (re-rendering the same chart and doubling the wall time)
     // even after being told the charts are already shown; we short-circuit the repeat.
     let mut ran_python_code: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    // Whether run_python has executed yet this turn — drives the one-time /work workspace reset so
+    // files persist across calls within a turn (but not across turns).
+    let mut python_started = false;
     // Loop breaker: signature of the previous step's tool-call set + how many times in a row it's
     // repeated. A model stuck re-issuing the same calls (common with reasoning off) is nudged then
     // force-answered instead of spinning to max_steps.
@@ -1705,8 +1708,12 @@ pub async fn agent_loop<R: tauri::Runtime>(
                 });
             }
 
+            // The Pyodide /work workspace is wiped only on the FIRST run_python of this turn, so
+            // files an earlier call wrote (chart PNGs, etc.) persist into later calls in the turn.
+            let python_reset = name == "run_python" && !python_started;
+            if name == "run_python" { python_started = true; }
             // Route: builtin → openapi → sparql → mcp
-            let result = dispatch_tool(name, args, &openapi_specs, &sparql_endpoints, mcp_connections, &allowed_dirs, &dispatch_paths, web_search_results, silent, app).await;
+            let result = dispatch_tool(name, args, &openapi_specs, &sparql_endpoints, mcp_connections, &allowed_dirs, &dispatch_paths, web_search_results, silent, python_reset, app).await;
 
             // Stop pressed during the tool call (e.g. a long-running run_python) — bail before
             // rendering its result, which could otherwise land in a now-different chat. The
@@ -1803,7 +1810,7 @@ pub async fn call_one_tool<R: tauri::Runtime>(
     app: &AppHandle<R>,
 ) -> String {
     dispatch_tool(name, args, openapi_specs, sparql_endpoints, mcp_connections,
-        allowed_dirs, sandbox_paths, web_search_results, /*silent*/ true, app).await
+        allowed_dirs, sandbox_paths, web_search_results, /*silent*/ true, /*python_reset*/ true, app).await
 }
 
 /// Order-independent hash of a step's tool calls (name + arguments), used to detect a model that
@@ -1839,11 +1846,13 @@ async fn dispatch_tool<R: tauri::Runtime>(
     sandbox_paths: &[String],
     web_search_results: usize,
     silent: bool,
+    // Only meaningful for run_python: wipe /work first (true = first call of the turn).
+    python_reset: bool,
     app: &AppHandle<R>,
 ) -> String {
     // 0. Code-execution sandbox — gated behind a per-session permission prompt.
     if name == "run_python" {
-        return dispatch_run_python(args, allowed_dirs, sandbox_paths, silent, app).await;
+        return dispatch_run_python(args, allowed_dirs, sandbox_paths, silent, python_reset, app).await;
     }
 
     // 0b. Model-authored HTML artifact — stashed for the agent loop to render inline (sandboxed
@@ -2097,6 +2106,9 @@ async fn dispatch_run_python<R: tauri::Runtime>(
     _allowed_dirs: &[String],
     sandbox_paths: &[String],
     silent: bool,
+    // Wipe /work before running? True only on the first run_python of a turn, so files written by
+    // an earlier call this turn (e.g. chart PNGs) persist into later calls.
+    reset: bool,
     app: &AppHandle<R>,
 ) -> String {
     let code = args["code"].as_str().unwrap_or("").to_string();
@@ -2144,7 +2156,7 @@ async fn dispatch_run_python<R: tauri::Runtime>(
     let (tx, rx) = tokio::sync::oneshot::channel::<PyResult>();
     state.pending_python_result.lock().unwrap().insert(request_id, tx);
     let _ = app.emit("run-python-request",
-        serde_json::json!({ "request_id": request_id, "code": code, "files": files }));
+        serde_json::json!({ "request_id": request_id, "code": code, "files": files, "reset": reset }));
 
     // Interactive runs abort promptly on Stop (so a slow run can't resume into a new chat).
     // Background jobs manage their own lifecycle and must NOT obey the interactive stop flag

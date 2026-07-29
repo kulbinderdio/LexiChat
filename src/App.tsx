@@ -73,9 +73,10 @@ Rules:
 - External API tools (OpenAPI / MCP) are ONLY for requests that explicitly name that service. For anything about files on this computer, always use local file tools — never external API tools.`;
 
 const SUGGESTIONS = [
-  { icon: "🔍", title: "Search the web",   prompt: "What are the latest developments in AI?" },
-  { icon: "📁", title: "Browse files",     prompt: "List the files in my Documents folder" },
-  { icon: "⚡", title: "Quick question",   prompt: "Explain quantum computing in simple terms" },
+  { icon: "🔍", title: "Search the web",        prompt: "What are the latest developments in AI?" },
+  { icon: "📊", title: "Analyse & chart data",  prompt: "Chart this data and describe the trend: Jan 120, Feb 150, Mar 300, Apr 210, May 260" },
+  { icon: "🖼️", title: "Make a presentation",   prompt: "Create a 5-slide presentation introducing a local coffee shop" },
+  { icon: "✍️", title: "Draft an email",        prompt: "Draft a polite follow-up email chasing an unpaid invoice" },
 ];
 
 const ALL_BUILTIN_TOOLS: ToolSchema[] = [
@@ -94,7 +95,7 @@ const ALL_BUILTIN_TOOLS: ToolSchema[] = [
   { type: "function", function: { name: "compose_email", description: "Build a base64url-encoded RFC 2822 email ready for the Gmail API. Returns ONLY the raw base64url string — use the entire return value as the 'raw' field in gmail_sendmessage, with no modification.", parameters: { type: "object", properties: { to: { type: "string", description: "Recipient email address(es), comma-separated." }, from: { type: "string", description: "Sender email address (optional)." }, subject: { type: "string", description: "Email subject line." }, body: { type: "string", description: "Plain text email body." }, reply_to_message_id: { type: "string", description: "Message-ID to reply to, for threading (optional)." } }, required: ["to","subject","body"] } } },
   { type: "function", function: { name: "fetch_webpage", description: "Fetch and read the full text content of a webpage by URL. Strips HTML and returns readable text. This is the correct tool whenever the user wants to see, read, open, or show an article or page — including the full article behind a web_search result (pass that result's URL). Do NOT refuse such requests or claim you can only summarise; call this tool instead. Also use it to read any specific URL the user provides.", parameters: { type: "object", properties: { url: { type: "string", description: "Full URL to fetch, must start with http:// or https://" } }, required: ["url"] } } },
   { type: "function", function: { name: "get_current_datetime", description: "Get the current local date and time. Returns human-readable, ISO 8601, filename-safe, and Unix timestamp formats. Use whenever you need today's date or a timestamp for a filename.", parameters: { type: "object", properties: {}, required: [] } } },
-  { type: "function", function: { name: "run_python", description: "Execute real Python (CPython) in a secure, offline sandbox to compute, analyse data, and CREATE CHARTS. The full standard library plus numpy, pandas, matplotlib, scipy, sympy, openpyxl (read/write Excel .xlsx), beautifulsoup4 (parse HTML), and geopandas with shapely & pyproj (geospatial — plot points/lines/polygons and choropleth MAPS as a matplotlib figure; note there is no online street/satellite basemap offline, so for a street-map backdrop use a connected map tool instead), and python-pptx (build editable PowerPoint .pptx decks — used by the 'presentation' skill) are available — import them normally. These are the ONLY third-party packages, and there is NO network access, so do not import anything else (e.g. requests, scikit-learn, plotly, contextily) — it will fail. Use print() for text output. Files live in a virtual workspace at /work/uploads/: the user's attached files are there — documents (PDF, Word) are ALREADY extracted to plain text, so just open() and read them (do NOT try to PDF-parse); data files (CSV, Excel, JSON) are as-is for pandas. SAVE any output (files, charts) to /work/out/ (kept for the user). (For a plain read/summary of a document with no computation, prefer the read_file tool — no code or permission needed.) Use normal Python I/O — open(), pathlib, pd.read_csv('/work/uploads/data.csv'). TO SHOW A GRAPH, build a matplotlib figure (e.g. `import matplotlib.pyplot as plt; plt.plot(x, y)`) — it is rendered INLINE in the chat automatically — you do NOT need to save it (do NOT hand-draw ASCII or SVG). Only use plt.savefig('/work/out/name.png') if the user explicitly wants a saved file — /work/out is an in-memory scratch path, but anything you write there is copied to a real folder on the user's disk and the tool result reports that real absolute path. When telling the user where a file was saved, quote the real path from the tool result (the line marked SAVED TO DISK); NEVER tell the user the file is at /work/out (they cannot open that). No network access. Do not read/write paths outside /work.", parameters: { type: "object", properties: { code: { type: "string", description: "The Python source code to execute." } }, required: ["code"] } } },
+  { type: "function", function: { name: "run_python", description: "Execute real Python (CPython) in a secure, offline sandbox to compute, analyse data, and CREATE CHARTS. The full standard library plus numpy, pandas, matplotlib, scipy, sympy, openpyxl (read/write Excel .xlsx), beautifulsoup4 (parse HTML), and geopandas with shapely & pyproj (geospatial — plot points/lines/polygons and choropleth MAPS as a matplotlib figure; note there is no online street/satellite basemap offline, so for a street-map backdrop use a connected map tool instead), and python-pptx (build editable PowerPoint .pptx decks — used by the 'presentation' skill) are available — import them normally. These are the ONLY third-party packages, and there is NO network access, so do not import anything else (e.g. requests, scikit-learn, plotly, contextily) — it will fail. Use print() for text output. Files live in a virtual workspace at /work/uploads/: the user's attached files are there — documents (PDF, Word) are ALREADY extracted to plain text, so just open() and read them (do NOT try to PDF-parse); data files (CSV, Excel, JSON) are as-is for pandas. SAVE any output (files, charts) to /work/out/ (kept for the user). Your /work files (and Python variables) PERSIST across run_python calls within the same turn — a chart PNG you saved in one call is still there in the next — and reset only when the user sends a new message. So you can build a task up across calls (e.g. generate chart PNGs in one call, then read them to build a PowerPoint in another). (For a plain read/summary of a document with no computation, prefer the read_file tool — no code or permission needed.) Use normal Python I/O — open(), pathlib, pd.read_csv('/work/uploads/data.csv'). TO SHOW A GRAPH, build a matplotlib figure (e.g. `import matplotlib.pyplot as plt; plt.plot(x, y)`) — it is rendered INLINE in the chat automatically — you do NOT need to save it (do NOT hand-draw ASCII or SVG). Only use plt.savefig('/work/out/name.png') if the user explicitly wants a saved file — /work/out is an in-memory scratch path, but anything you write there is copied to a real folder on the user's disk and the tool result reports that real absolute path. When telling the user where a file was saved, quote the real path from the tool result (the line marked SAVED TO DISK); NEVER tell the user the file is at /work/out (they cannot open that). No network access. Do not read/write paths outside /work.", parameters: { type: "object", properties: { code: { type: "string", description: "The Python source code to execute." } }, required: ["code"] } } },
   { type: "function", function: { name: "create_artifact", description: "Render a rich, self-contained HTML page inline in the chat, with a Save button (saves as a .html file the user can open in any browser). Use this for polished deliverables — formatted reports, dashboards, styled tables/cards, or simple interactive views — when plain markdown isn't enough. The HTML MUST be fully self-contained: inline all CSS in a <style> tag and any JS in a <script> tag; NO external URLs, fonts, images, or CDNs (they are blocked). To include a chart, map or image you generated earlier THIS TURN (e.g. a matplotlib chart from run_python, or a map), use the placeholder token as the image source: <img src=\"{{figure:1}}\"> for the first such image, {{figure:2}} for the second, and so on (in the order they were created) — LexiChat substitutes the real image. Do NOT paste base64 image data yourself. Any other images must be data: URIs. It renders in a sandboxed frame. Do NOT put your final prose answer inside the artifact — write a short summary in chat and put the rich content in the artifact.", parameters: { type: "object", properties: { title: { type: "string", description: "Short title for the artifact (used as the saved filename and header)." }, html: { type: "string", description: "A complete, self-contained HTML document (or fragment) with all CSS/JS inlined and no external resources." } }, required: ["title", "html"] } } },
 ];
 
@@ -542,13 +543,18 @@ function collectTurnFigures(msgs: ChatMessage[]): string[] {
     .flatMap(m => m.toolImages ?? [])
     .filter(u => u.startsWith("data:"));
 }
+// Shown for a {{figure:N}} that has no matching figure (e.g. the model referenced more charts than
+// it generated inline), so an artifact renders a labelled placeholder rather than a broken image.
+const MISSING_FIGURE_URL = "data:image/svg+xml," + encodeURIComponent(
+  "<svg xmlns='http://www.w3.org/2000/svg' width='480' height='270'><rect width='100%' height='100%' rx='12' fill='#f1f5f9'/><text x='50%' y='50%' text-anchor='middle' dominant-baseline='middle' fill='#94a3b8' font-family='sans-serif' font-size='16'>chart unavailable</text></svg>");
+
 // Replace {{figure:N}} tokens with figure data URLs. `asMarkdown` wraps in markdown image syntax
 // (for report text); otherwise substitutes the raw URL (for artifact HTML `src="…"`).
 function substituteFigures(text: string, figs: string[], asMarkdown: boolean): { out: string; used: Set<number> } {
   const used = new Set<number>();
   const out = text.replace(/\{\{figure:(\d+)\}\}/g, (whole, n) => {
     const i = Number(n) - 1;
-    if (!figs[i]) return whole;
+    if (!figs[i]) return asMarkdown ? whole : MISSING_FIGURE_URL;
     used.add(i);
     return asMarkdown ? `![Figure ${n}](${figs[i]})` : figs[i];
   });
@@ -947,7 +953,7 @@ export function McpAppFrame({ ui, toolName, onSend }: { ui: ToolUi; toolName: st
             post({ jsonrpc: "2.0", id, result: {
               protocolVersion: "2026-01-26",
               hostCapabilities: {},
-              hostInfo: { name: "LexiChat", version: "2.1.1" },
+              hostInfo: { name: "LexiChat", version: "2.3.0" },
               hostContext: {
                 toolInfo: {
                   id: "1",
@@ -1544,8 +1550,8 @@ export default function App() {
 
     // run_python execution: the backend hands us code + staged files; run them in the Pyodide
     // worker (WASM CPython in the webview) and send the result back.
-    listen<{ request_id: number; code: string; files: PyFile[] }>("run-python-request", async e => {
-      const res = await runPython(e.payload.code, e.payload.files ?? []);
+    listen<{ request_id: number; code: string; files: PyFile[]; reset?: boolean }>("run-python-request", async e => {
+      const res = await runPython(e.payload.code, e.payload.files ?? [], e.payload.reset !== false);
       await invoke("respond_python_result", { args: {
         request_id: e.payload.request_id,
         output: res.output, error: res.error, images: res.images, out_files: res.outFiles,
@@ -2276,7 +2282,7 @@ export default function App() {
               Runs entirely on-device via Ollama. Reads files, searches the web,
               calls APIs, and keeps your data private.
             </p>
-            <div className="about-version">Version 2.1.1</div>
+            <div className="about-version">Version 2.3.0</div>
 
             <div className="about-support">
               <div className="about-support-label">Support the project</div>

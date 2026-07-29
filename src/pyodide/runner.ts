@@ -105,7 +105,9 @@ function ensureWorker(): Promise<void> {
 export function warmPyodide(): void { void ensureWorker(); }
 
 /** Execute Python in the sandbox with a staged workspace. Never rejects — errors come back on `.error`. */
-export async function runPython(code: string, files: PyFile[]): Promise<PyResult> {
+// `reset` (default true) wipes the /work workspace before running. The agent loop passes false for
+// run_python calls after the first in a turn, so files written earlier in the turn persist.
+export async function runPython(code: string, files: PyFile[], reset = true): Promise<PyResult> {
   await ensureWorker();
   if (loadError || !worker) {
     return { output: "", images: [], outFiles: [], error: loadError ?? "Pyodide worker unavailable." };
@@ -114,6 +116,6 @@ export async function runPython(code: string, files: PyFile[]): Promise<PyResult
   toolCallsRemaining = MAX_TOOL_CALLS_PER_RUN; // reset code-mode call budget per run
   return new Promise<PyResult>((resolve) => {
     pending.set(id, resolve);
-    worker!.postMessage({ type: "run", id, code, files });
+    worker!.postMessage({ type: "run", id, code, files, reset });
   });
 }

@@ -2220,7 +2220,17 @@ function SkillsTab({ skills, profile, onToggle, onReload }:
             <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
               {viewing.builtin && "Built-in · "}
               {viewing.requires?.length ? `Requires: ${viewing.requires.join(", ")}` : "No tool requirements (works anywhere)"}
-              {viewing.resources?.length ? ` · Resources: ${viewing.resources.join(", ")}` : ""}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <span className="admin-row-title">Resource files <span style={{ fontWeight: 400, color: "var(--text-tertiary)" }}>— staged into <span style={{ fontFamily: "monospace" }}>/work/skills/</span> for run_python (e.g. a <span style={{ fontFamily: "monospace" }}>.pptx</span> template)</span></span>
+              {(skills.find(s => s.id === viewing.id)?.resources ?? []).map(r => (
+                <div key={r} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                  <span style={{ fontFamily: "monospace" }}>📎 {r}</span>
+                  <button className="link-btn" style={{ color: "var(--danger, #dc2626)" }} onClick={() => removeResource(viewing.id, r)}>remove</button>
+                </div>
+              ))}
+              {(skills.find(s => s.id === viewing.id)?.resources ?? []).length === 0 && <span className="admin-row-sub">No resource files attached.</span>}
+              <button className="btn" style={{ alignSelf: "flex-start" }} onClick={() => addResource(viewing.id)}>+ Add file</button>
             </div>
             <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.04em" }}>Instructions</div>
             <pre style={{ margin: 0, maxHeight: 360, overflow: "auto", padding: "10px 12px", fontSize: 12, lineHeight: 1.5, background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)", fontFamily: "'SF Mono','Fira Code',monospace", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{viewing.body || "(no instructions)"}</pre>

@@ -70,6 +70,7 @@ tailwind.config = {
       <a href="#how" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">How they work</a>
       <a href="#using" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Using skills</a>
       <a href="#builtin" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Built-in skills</a>
+      <a href="#prompts" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Example prompts</a>
       <a href="#create" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Create your own</a>
       <a href="#sharing" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Sharing</a>
     </div>
@@ -156,13 +157,66 @@ tailwind.config = {
       <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
         <span class="material-symbols-outlined text-accent">widgets</span> Built-in skills
       </h2>
-      <p class="text-slate-600 mb-5">LexiChat ships with a starter set, ready on every install:</p>
-      <div class="grid sm:grid-cols-2 gap-3">
-        <div class="bg-white border border-slate-200 rounded-xl p-4"><div class="font-semibold text-sm mb-1">🖼️ Deliverables</div><div class="text-sm text-slate-500">presentation (.pptx) · spreadsheet-model (.xlsx) · branded-report · invoice-quote · fillable-pdf</div></div>
-        <div class="bg-white border border-slate-200 rounded-xl p-4"><div class="font-semibold text-sm mb-1">📊 Data &amp; visuals</div><div class="text-sm text-slate-500">dashboard · geospatial-map · data-cleaning · chart-styling</div></div>
-        <div class="bg-white border border-slate-200 rounded-xl p-4"><div class="font-semibold text-sm mb-1">✍️ Research &amp; writing</div><div class="text-sm text-slate-500">literature-review · citation-format · plain-english · meeting-notes · email-draft</div></div>
-        <div class="bg-white border border-slate-200 rounded-xl p-4"><div class="font-semibold text-sm mb-1">🧭 Domain</div><div class="text-sm text-slate-500">local-area-brief · api-explainer</div></div>
+      <p class="text-slate-600 mb-5">LexiChat ships with <strong>17</strong> skills, ready on every install:</p>
+      <div class="grid md:grid-cols-2 gap-4">
+        <div class="bg-white border border-slate-200 rounded-xl p-5">
+          <div class="font-semibold text-sm mb-3">🖼️ Deliverables <span class="font-normal text-slate-400">— build real files</span></div>
+          <ul class="space-y-2 text-sm text-slate-600">
+            <li><span class="prose-code text-accent">presentation</span> — an editable PowerPoint deck, plus an inline styled preview</li>
+            <li><span class="prose-code text-accent">branded-deck</span> — a PowerPoint from <em>your</em> uploaded template, so it's on-brand</li>
+            <li><span class="prose-code text-accent">spreadsheet-model</span> — a multi-sheet Excel workbook with live formulas</li>
+            <li><span class="prose-code text-accent">branded-report</span> — a polished house-style report (HTML / PDF / Word)</li>
+            <li><span class="prose-code text-accent">invoice-quote</span> — a professional invoice or quote from line items</li>
+            <li><span class="prose-code text-accent">fillable-pdf</span> — a print-ready document you can save as PDF</li>
+          </ul>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-xl p-5">
+          <div class="font-semibold text-sm mb-3">📊 Data &amp; visuals</div>
+          <ul class="space-y-2 text-sm text-slate-600">
+            <li><span class="prose-code text-accent">dashboard</span> — an interactive HTML dashboard with KPI cards and charts</li>
+            <li><span class="prose-code text-accent">geospatial-map</span> — plot points, boundaries or a choropleth map</li>
+            <li><span class="prose-code text-accent">data-cleaning</span> — tidy a messy CSV/Excel (types, dates, duplicates) and save it</li>
+            <li><span class="prose-code text-accent">chart-styling</span> — consistent, good-looking matplotlib charts</li>
+          </ul>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-xl p-5">
+          <div class="font-semibold text-sm mb-3">✍️ Research &amp; writing <span class="font-normal text-slate-400">— no sandbox needed</span></div>
+          <ul class="space-y-2 text-sm text-slate-600">
+            <li><span class="prose-code text-accent">literature-review</span> — a structured synthesis of the literature, with citations</li>
+            <li><span class="prose-code text-accent">citation-format</span> — references in APA / Harvard / MLA / Vancouver / Chicago</li>
+            <li><span class="prose-code text-accent">plain-english</span> — rewrite dense text to an accessible reading age</li>
+            <li><span class="prose-code text-accent">meeting-notes</span> — turn a transcript into decisions and action items</li>
+            <li><span class="prose-code text-accent">email-draft</span> — a well-structured email in a chosen tone</li>
+          </ul>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-xl p-5">
+          <div class="font-semibold text-sm mb-3">🧭 Domain</div>
+          <ul class="space-y-2 text-sm text-slate-600">
+            <li><span class="prose-code text-accent">local-area-brief</span> — a sourced UK neighbourhood report from a postcode</li>
+            <li><span class="prose-code text-accent">api-explainer</span> — a usage cheat-sheet from an OpenAPI spec</li>
+          </ul>
+        </div>
       </div>
+      <p class="text-sm text-slate-500 mt-4">Every built-in doubles as a <strong>reference template</strong> — open <span class="font-medium">Admin → Skills → View</span> to read its recipe, or <span class="font-medium">Duplicate</span> it to base your own on.</p>
+    </section>
+
+    <!-- Prompts -->
+    <section id="prompts" class="mb-12">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">chat</span> Prompts that trigger skills
+      </h2>
+      <p class="text-slate-600 mb-5">You never name a skill — just ask naturally and the model loads the right one. A few examples:</p>
+      <div class="space-y-2.5">
+        <div class="bg-white border border-slate-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-2"><div class="flex-1 text-sm text-slate-700">"Make a 6-slide deck on our Q3 results using the branded template."</div><span class="prose-code text-xs text-accent bg-indigo-50 rounded-lg px-2 py-1 self-start">branded-deck</span></div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-2"><div class="flex-1 text-sm text-slate-700">"Build a monthly budget spreadsheet with formulas and a summary sheet."</div><span class="prose-code text-xs text-accent bg-indigo-50 rounded-lg px-2 py-1 self-start">spreadsheet-model</span></div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-2"><div class="flex-1 text-sm text-slate-700">"Turn this sales data into a dashboard with KPI cards and a bar chart."</div><span class="prose-code text-xs text-accent bg-indigo-50 rounded-lg px-2 py-1 self-start">dashboard</span></div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-2"><div class="flex-1 text-sm text-slate-700">"Make an invoice from Acme Ltd to Jane Doe: three items plus 20% VAT."</div><span class="prose-code text-xs text-accent bg-indigo-50 rounded-lg px-2 py-1 self-start">invoice-quote</span></div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-2"><div class="flex-1 text-sm text-slate-700">"Turn these meeting notes into minutes with owners and due dates."</div><span class="prose-code text-xs text-accent bg-indigo-50 rounded-lg px-2 py-1 self-start">meeting-notes</span></div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-2"><div class="flex-1 text-sm text-slate-700">"Rewrite this paragraph in plain English."</div><span class="prose-code text-xs text-accent bg-indigo-50 rounded-lg px-2 py-1 self-start">plain-english</span></div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-2"><div class="flex-1 text-sm text-slate-700">"Format this reference in APA 7th."</div><span class="prose-code text-xs text-accent bg-indigo-50 rounded-lg px-2 py-1 self-start">citation-format</span></div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-2"><div class="flex-1 text-sm text-slate-700">"Map these five cities sized by population."</div><span class="prose-code text-xs text-accent bg-indigo-50 rounded-lg px-2 py-1 self-start">geospatial-map</span></div>
+      </div>
+      <p class="text-sm text-slate-500 mt-4">In the chat you'll see a <span class="prose-code">use_skill(…)</span> chip when a skill loads — so you always know one kicked in.</p>
     </section>
 
     <!-- Create -->
@@ -196,8 +250,14 @@ Keep colours consistent and the title a one-line summary of the project.
         <li class="flex gap-2"><span class="material-symbols-outlined text-emerald-500 text-base flex-shrink-0">check</span> Length is free — the body only loads when used, so it never bloats your chats.</li>
       </ul>
       <div class="bg-white border border-slate-200 rounded-xl p-4 flex items-start gap-3">
-        <span class="material-symbols-outlined text-accent flex-shrink-0 mt-0.5">save</span>
-        <div class="text-sm text-slate-600">Drop the folder in <code class="inline">~/.local/share/lexichat/skills/</code> and <strong>restart LexiChat</strong> — your skill appears in Admin → Skills. An in-app editor (and resource uploads, e.g. a .pptx template) is on the roadmap.</div>
+        <span class="material-symbols-outlined text-accent flex-shrink-0 mt-0.5">edit</span>
+        <div class="text-sm text-slate-600">No files needed — build it in the app: <strong>Admin → Skills → New skill</strong>, fill in the fields, and Save. You can also <strong>View</strong> a built-in for reference or <strong>Duplicate</strong> it as a starting point. (Or drop a <code class="inline">SKILL.md</code> folder into <code class="inline">~/.local/share/lexichat/skills/</code> and restart.)</div>
+      </div>
+
+      <h3 class="text-base font-semibold mt-8 mb-2 flex items-center gap-2"><span class="material-symbols-outlined text-accent text-lg">attach_file</span> Resource files (templates &amp; helpers)</h3>
+      <p class="text-slate-600 mb-3">A skill can ship files — a PowerPoint template, a logo, a helper module. Add them in the skill's <strong>View</strong> panel (<span class="font-medium">+ Add file</span>); when the skill runs they're staged into <code class="inline">/work/skills/</code> where its code can read them.</p>
+      <div class="bg-indigo-50 border border-indigo-100 rounded-xl p-4 text-sm text-slate-600">
+        <strong>Example — your own branded deck.</strong> Open the built-in <span class="prose-code text-accent">branded-deck</span> skill → <span class="font-medium">View → + Add file</span> → pick your <code class="inline">.pptx</code> template. Then ask for a presentation — it builds on your template's fonts, colours and layouts automatically. No editing required.
       </div>
     </section>
 
@@ -206,8 +266,8 @@ Keep colours consistent and the title a one-line summary of the project.
       <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
         <span class="material-symbols-outlined text-accent">ios_share</span> Sharing
       </h2>
-      <p class="text-slate-600 mb-4">When you export a <a href="../profiles.html" class="text-accent hover:underline">profile</a>, the skills it uses are remembered too. Built-in skills exist on every install, so an imported profile lights up its skills automatically — nothing else to set up.</p>
-      <div class="bg-slate-100 border border-slate-200 rounded-xl p-4 text-sm text-slate-600">Bundling your <em>custom</em> skills inside an exported profile (so they travel with their content to another machine) is on the roadmap — today, share the <code class="inline">SKILL.md</code> file directly.</div>
+      <p class="text-slate-600 mb-4">When you export a <a href="../profiles.html" class="text-accent hover:underline">profile</a>, the skills it uses travel with it. Built-in skills exist on every install, so they light up automatically. Your <em>custom</em> skills are <strong>bundled into the export</strong> — instructions <em>and</em> any resource files — and installed on import, so a profile works the same on another machine with nothing to set up.</p>
+      <div class="bg-slate-100 border border-slate-200 rounded-xl p-4 text-sm text-slate-600">Tip: to share a branded template, put it on a <em>custom</em> skill (Duplicate <span class="prose-code">branded-deck</span>, then attach your <code class="inline">.pptx</code>) and enable that skill on the profile — the template travels with the export. A template attached to a built-in stays on your machine.</div>
     </section>
 
   </article>

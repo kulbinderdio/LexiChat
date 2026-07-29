@@ -51,16 +51,17 @@ pub fn skill_resource_paths(s: &RegisteredSkill) -> Vec<PathBuf> {
     s.resources.iter().map(|r| skill_dir(&s.id).join(r)).collect()
 }
 
+/// Add a resource file to a skill's folder. Allowed for built-ins too — a built-in's SKILL.md is
+/// re-seeded each launch but resource files persist, which is how you drop your own template into a
+/// built-in like `branded-deck` without duplicating it.
 pub fn add_resource(id: &str, name: &str, bytes: &[u8]) -> Result<(), String> {
-    if is_builtin(id) { return Err("resources can't be added to a built-in skill — duplicate it first".into()); }
     let name = safe_resource_name(name)?;
     let dir = skill_dir(id);
-    if !dir.exists() { return Err(format!("skill '{id}' doesn't exist — save it first")); }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     std::fs::write(dir.join(name), bytes).map_err(|e| e.to_string())
 }
 
 pub fn remove_resource(id: &str, name: &str) -> Result<(), String> {
-    if is_builtin(id) { return Err("can't modify a built-in skill".into()); }
     let name = safe_resource_name(name)?;
     let f = skill_dir(id).join(name);
     if f.exists() { std::fs::remove_file(&f).map_err(|e| e.to_string())?; }
@@ -193,6 +194,7 @@ pub fn seed_builtin_skills() {
 
 const BUILTIN_SKILLS: &[(&str, &str)] = &[
     ("presentation", PRESENTATION_SKILL),
+    ("branded-deck", BRANDED_DECK_SKILL),
     ("spreadsheet-model", SPREADSHEET_SKILL),
     ("geospatial-map", GEOSPATIAL_SKILL),
     ("branded-report", BRANDED_REPORT_SKILL),
@@ -228,10 +230,17 @@ Outline first: a cover slide, then ONE idea per slide (5–8 slides is ideal). P
 slide title ("Sales doubled in Q3", not "Q3 sales"). 3–6 short bullets per slide, never a wall of
 text. Pick ONE accent colour that fits the topic.
 
-## Step 2 — Charts (only if a slide needs one; do this BEFORE create_artifact)
-Generate charts in `run_python` with matplotlib — each renders inline as a figure. Reference them by
-creation order: `<img src="{{figure:1}}">` in the HTML deck, and also `plt.savefig('/work/chart1.png')`
-so the .pptx can embed the same image.
+## Step 2 — Charts (if slides need them; you MUST do this BEFORE Step 3)
+`{{figure:N}}` in the HTML deck points to charts that ALREADY rendered inline THIS turn — so generate
+every chart FIRST, then build the deck. If you create the deck before the charts exist, the images
+show as broken squares.
+- Generate ALL the charts in one `run_python` call. Make each an OPEN matplotlib figure (one
+  `plt.figure()` per chart) and do NOT `plt.close()` them — LexiChat captures open figures inline in
+  creation order, and that order is what `{{figure:1}}`, `{{figure:2}}`… map to.
+- ALSO `plt.savefig('/work/chartN.png')` for each, so Step 4's .pptx can embed the same image
+  (/work persists across calls this turn).
+- Only reference `{{figure:1}}`…`{{figure:M}}` for the M charts you actually made — an out-of-range
+  number renders as a broken image.
 
 ## Step 3 — Inline styled deck (create_artifact)
 Call `create_artifact` with a COMPLETE self-contained HTML document based on this template. It's a
@@ -278,6 +287,8 @@ Design: confident cover title, generous whitespace, ≤6 bullets, prefer a chart
 over a text wall. If `create_artifact` isn't available, skip this step and still do the .pptx.
 
 ## Step 4 — Editable PowerPoint (run_python + python-pptx), THEMED (not plain)
+For chart slides, `plt.savefig('/work/chartN.png')` then `add_picture` it. The charts may come from an
+earlier call this turn (/work persists) or the same call — either works.
 ```python
 from pptx import Presentation
 from pptx.util import Inches, Pt, Emu
@@ -332,6 +343,61 @@ prs.save('/work/out/deck.pptx'); print('saved /work/out/deck.pptx')
   tell the user the file is at /work/out (they can't open that).
 - One idea per slide, takeaway titles, ≤6 bullets, consistent colours/fonts. Design it; don't ship
   plain black-on-white text.
+"##;
+
+const BRANDED_DECK_SKILL: &str = r##"---
+name: branded-deck
+description: Build a PowerPoint from YOUR uploaded template so the deck matches your brand (fonts, colours, layouts). Attach a .pptx template to this skill's resources, then ask for slides.
+requires: [run_python]
+---
+# Branded presentation (from your template)
+
+This skill builds the deck on top of a PowerPoint TEMPLATE the user attached as a resource
+(Admin → Skills → View this skill → Add file → their .pptx). Opening the template inherits its theme
+(fonts, colours) and slide layouts, so every slide is on-brand with no manual styling. If no template
+is attached it falls back to a plain deck — tell the user they can attach one for branding.
+
+Build it in run_python:
+```python
+import glob
+from pptx import Presentation
+from pptx.util import Inches, Pt
+
+tpl = sorted(glob.glob('/work/skills/*.pptx'))
+prs = Presentation(tpl[0]) if tpl else Presentation()   # template theme+layouts, or a blank deck
+
+# Keep the template's masters/layouts/theme but drop any example slides it ships with:
+for sid in list(prs.slides._sldIdLst):
+    prs.slides._sldIdLst.remove(sid)
+
+# Layouts come from the TEMPLATE — check the names once if unsure which index is which:
+# for i, l in enumerate(prs.slide_layouts): print(i, l.name)
+
+def slide(layout_idx, title, bullets=None, subtitle=None):
+    s = prs.slides.add_slide(prs.slide_layouts[layout_idx])
+    if s.shapes.title is not None:
+        s.shapes.title.text = title
+    body = [p for p in s.placeholders if p.placeholder_format.idx != 0]  # non-title placeholders
+    if subtitle and body:
+        body[0].text = subtitle
+    elif bullets and body:
+        tf = body[0].text_frame; tf.text = bullets[0]
+        for b in bullets[1:]:
+            p = tf.add_paragraph(); p.text = b
+    return s
+
+slide(0, 'Deck title', subtitle='Subtitle · author · date')                 # title layout
+slide(1, 'Section heading', bullets=['Point one', 'Point two', 'Point three'])  # title + content
+# add more slides…
+
+prs.save('/work/out/deck.pptx'); print('saved /work/out/deck.pptx')
+```
+
+Rules: use the template's own layouts and placeholders — do NOT override fonts/colours (the template
+supplies the brand). One idea per slide, ≤6 short bullets, a takeaway in each title. For a chart,
+render it with matplotlib and save a PNG to /work, then `slide.shapes.add_picture(...)` (the chart may
+be from an earlier call this turn — /work persists across run_python calls within a turn). Save to
+/work/out and quote the real saved path from the tool result.
 "##;
 
 const SPREADSHEET_SKILL: &str = r##"---
@@ -815,6 +881,6 @@ mod tests {
             assert!(!s.description.is_empty(), "skill '{id}' missing description");
             assert!(s.body.len() > 50, "skill '{id}' body looks empty");
         }
-        assert_eq!(BUILTIN_SKILLS.len(), 16);
+        assert_eq!(BUILTIN_SKILLS.len(), 17);
     }
 }
