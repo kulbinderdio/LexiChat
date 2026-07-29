@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Skills — LexiChat Docs</title>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-NHGZKJ6KE1"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-NHGZKJ6KE1');
+</script>
+<meta name="description" content="LexiChat Skills — on-demand capability recipes that teach your local AI how to build presentations, spreadsheets, maps, reports and more. What they are, how to use them, and how to write your own."/>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/>
+<script>
+tailwind.config = {
+  darkMode: 'class',
+  theme: {
+    extend: {
+      fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui'] },
+      colors: { accent: '#6366f1', 'accent-light': '#818cf8', 'accent-dark': '#4f46e5' }
+    }
+  }
+}
+</script>
+<style>
+  body { font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; }
+  .gradient-text { background: linear-gradient(135deg, #6366f1 0%, #a78bfa 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+  .glass { background: rgba(255,255,255,0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+  .prose-code { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; }
+  pre { background: #0f172a; border-radius: 0.75rem; padding: 1.25rem; overflow-x: auto; }
+  pre code { color: #cbd5e1; font-size: 0.8125rem; line-height: 1.65; font-family: 'SF Mono', 'Fira Code', monospace; }
+  .fm { color: #818cf8; }
+  .cm { color: #64748b; }
+  .str { color: #34d399; }
+  code.inline { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85em; background: #eef2ff; color: #4f46e5; padding: 0.1rem 0.4rem; border-radius: 0.375rem; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-900 antialiased">
+
+<!-- ── Nav ─────────────────────────────────────────────────────────────────── -->
+<nav class="fixed top-0 w-full z-50 glass border-b border-slate-200/60">
+  <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+    <a href="../index.html" class="flex items-center gap-2.5">
+      <img src="../resources/lexi1.png" alt="LexiChat" class="w-8 h-8 rounded-xl"/>
+      <span class="font-bold text-lg tracking-tight">LexiChat</span>
+    </a>
+    <div class="hidden md:flex items-center gap-8">
+      <a href="index.html" class="text-sm font-medium text-slate-600 hover:text-accent transition-colors">← All Docs</a>
+      <a href="getting-started.html" class="text-sm font-medium text-slate-600 hover:text-accent transition-colors">Getting Started</a>
+      <a href="features.html" class="text-sm font-medium text-slate-600 hover:text-accent transition-colors">Features</a>
+      <a href="tools.html" class="text-sm font-medium text-slate-600 hover:text-accent transition-colors">Tools</a>
+      <a href="../profiles.html" class="text-sm font-medium text-slate-600 hover:text-accent transition-colors">Profiles</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ── Layout ───────────────────────────────────────────────────────────────── -->
+<div class="max-w-5xl mx-auto px-6 pt-28 pb-24 flex gap-12">
+
+  <!-- Sidebar -->
+  <aside class="hidden lg:block w-56 flex-shrink-0">
+    <div class="sticky top-24 space-y-1">
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Skills</div>
+      <a href="#overview" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">What are skills?</a>
+      <a href="#how" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">How they work</a>
+      <a href="#using" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Using skills</a>
+      <a href="#builtin" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Built-in skills</a>
+      <a href="#create" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Create your own</a>
+      <a href="#sharing" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Sharing</a>
+    </div>
+  </aside>
+
+  <!-- Content -->
+  <article class="flex-1 min-w-0">
+    <div class="mb-4">
+      <a href="index.html" class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-accent transition-colors">
+        <span class="material-symbols-outlined text-base">arrow_back</span> Docs
+      </a>
+    </div>
+
+    <h1 class="text-3xl md:text-4xl font-bold tracking-tight mb-3">Skills</h1>
+    <p class="text-lg text-slate-600 mb-10">Installable <span class="gradient-text font-semibold">know-how</span>. A skill teaches your local model how to produce something well — a presentation, a spreadsheet, a map, a branded report — and loads only when the task calls for it.</p>
+
+    <!-- Overview -->
+    <section id="overview" class="mb-12">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">auto_awesome</span> What are skills?
+      </h2>
+      <p class="text-slate-600 mb-4">A <strong>skill</strong> is a packaged recipe: a set of step-by-step instructions (and optionally a template or helper file) that shows the model how to do one kind of task really well. Think of it as installing an expert habit rather than hoping the model figures it out each time.</p>
+      <p class="text-slate-600 mb-4">Skills are different from the other two building blocks:</p>
+      <div class="grid sm:grid-cols-3 gap-4 mb-2">
+        <div class="bg-white border border-slate-200 rounded-xl p-5">
+          <div class="text-sm font-semibold mb-1">Profile</div>
+          <div class="text-sm text-slate-500">A persona + its toolset. Always on for the profile you've selected.</div>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-xl p-5">
+          <div class="text-sm font-semibold mb-1">Tool</div>
+          <div class="text-sm text-slate-500">A capability the model can call — an API, a file action, the code sandbox.</div>
+        </div>
+        <div class="bg-white border border-accent/30 rounded-xl p-5 ring-1 ring-accent/20">
+          <div class="text-sm font-semibold mb-1 text-accent">Skill</div>
+          <div class="text-sm text-slate-500">A task recipe, loaded on demand inside any profile. <em>How</em> to do something, not <em>what</em> you can do.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- How they work -->
+    <section id="how" class="mb-12">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">bolt</span> How they work
+      </h2>
+      <p class="text-slate-600 mb-4">Skills use <strong>progressive disclosure</strong> so they never clutter the model's context. Only a one-line description of each skill sits in the prompt. When your request matches, the model loads the full recipe on demand — then follows it.</p>
+      <div class="bg-white border border-slate-200 rounded-xl p-5 mb-4">
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">What happens when you ask for a deck</div>
+        <div class="flex flex-wrap items-center gap-2 text-sm">
+          <div class="bg-slate-100 rounded-lg px-3 py-1.5 font-medium">"Make me a presentation…"</div>
+          <span class="text-slate-400">→</span>
+          <div class="bg-accent/10 text-accent rounded-lg px-3 py-1.5 font-medium prose-code">use_skill("presentation")</div>
+          <span class="text-slate-400">→</span>
+          <div class="bg-slate-100 rounded-lg px-3 py-1.5 font-medium">recipe loads</div>
+          <span class="text-slate-400">→</span>
+          <div class="bg-slate-100 rounded-lg px-3 py-1.5 font-medium">runs Python</div>
+          <span class="text-slate-400">→</span>
+          <div class="bg-emerald-50 text-emerald-600 rounded-lg px-3 py-1.5 font-medium">styled deck + .pptx</div>
+        </div>
+      </div>
+      <p class="text-slate-600">The recipe runs inside LexiChat's offline <a href="tools.html" class="text-accent hover:underline">Python sandbox</a> — so a skill can build real files (PowerPoint, Excel), draw charts and maps, and render inline pages, all on your machine with nothing leaving it.</p>
+    </section>
+
+    <!-- Using -->
+    <section id="using" class="mb-12">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">play_circle</span> Using skills
+      </h2>
+      <p class="text-slate-600 mb-4">You don't invoke skills manually — just ask naturally ("build a dashboard for this data", "write a branded report", "turn these notes into minutes") and the model picks the right one. To control which skills a profile offers:</p>
+      <div class="bg-white border border-slate-200 rounded-xl p-5 mb-4">
+        <ol class="space-y-3 text-sm text-slate-600">
+          <li class="flex gap-3"><span class="flex-shrink-0 w-6 h-6 rounded-full bg-accent text-white flex items-center justify-center font-semibold text-xs">1</span> Open <strong>Admin → Skills</strong>. You'll see the catalogue of available skills.</li>
+          <li class="flex gap-3"><span class="flex-shrink-0 w-6 h-6 rounded-full bg-accent text-white flex items-center justify-center font-semibold text-xs">2</span> Set a profile active (Profiles → Set Active), then tick the skills it should offer — keep each profile focused on what it actually does.</li>
+          <li class="flex gap-3"><span class="flex-shrink-0 w-6 h-6 rounded-full bg-accent text-white flex items-center justify-center font-semibold text-xs">3</span> Ask away. The model loads a skill only when your request matches one.</li>
+        </ol>
+      </div>
+      <div class="bg-amber-50 border border-amber-100 rounded-xl p-4 flex items-start gap-3">
+        <span class="material-symbols-outlined text-amber-500 flex-shrink-0 mt-0.5">info</span>
+        <div class="text-sm text-slate-600">Some skills need the <strong>Run Python</strong> tool enabled (they build files or charts) — those declare it and only appear when the sandbox is on. Writing skills (citations, plain-English, meeting notes, emails) need nothing and work anywhere.</div>
+      </div>
+    </section>
+
+    <!-- Built-in -->
+    <section id="builtin" class="mb-12">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">widgets</span> Built-in skills
+      </h2>
+      <p class="text-slate-600 mb-5">LexiChat ships with a starter set, ready on every install:</p>
+      <div class="grid sm:grid-cols-2 gap-3">
+        <div class="bg-white border border-slate-200 rounded-xl p-4"><div class="font-semibold text-sm mb-1">🖼️ Deliverables</div><div class="text-sm text-slate-500">presentation (.pptx) · spreadsheet-model (.xlsx) · branded-report · invoice-quote · fillable-pdf</div></div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4"><div class="font-semibold text-sm mb-1">📊 Data &amp; visuals</div><div class="text-sm text-slate-500">dashboard · geospatial-map · data-cleaning · chart-styling</div></div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4"><div class="font-semibold text-sm mb-1">✍️ Research &amp; writing</div><div class="text-sm text-slate-500">literature-review · citation-format · plain-english · meeting-notes · email-draft</div></div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4"><div class="font-semibold text-sm mb-1">🧭 Domain</div><div class="text-sm text-slate-500">local-area-brief · api-explainer</div></div>
+      </div>
+    </section>
+
+    <!-- Create -->
+    <section id="create" class="mb-12">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">edit_document</span> Create your own
+      </h2>
+      <p class="text-slate-600 mb-4">A skill is just a folder with a <code class="inline">SKILL.md</code> file: a short front-matter header (used to find it) followed by the instructions in plain Markdown. No code to compile.</p>
+      <pre><code><span class="cm"># ~/.local/share/lexichat/skills/gantt-chart/SKILL.md</span>
+<span class="fm">---</span>
+<span class="fm">name:</span> gantt-chart
+<span class="fm">description:</span> Build a Gantt chart from a task list with start/end dates. Use for project timelines.
+<span class="fm">requires:</span> [run_python]      <span class="cm"># omit for instructions-only skills</span>
+<span class="fm">---</span>
+<span class="str"># Building a Gantt chart</span>
+
+Use matplotlib in run_python. Plot one horizontal bar per task from its start to end
+date, newest at the bottom, label each bar, add a "today" line, and save the figure.
+Keep colours consistent and the title a one-line summary of the project.
+</code></pre>
+      <div class="grid sm:grid-cols-3 gap-4 my-5">
+        <div class="bg-white border border-slate-200 rounded-xl p-4"><div class="text-sm font-semibold mb-1 prose-code text-accent">name</div><div class="text-sm text-slate-500">A short id used in <code class="inline">use_skill("…")</code>.</div></div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4"><div class="text-sm font-semibold mb-1 prose-code text-accent">description</div><div class="text-sm text-slate-500">One line — the only part always in the prompt, and how the model decides to load it. Make it specific.</div></div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4"><div class="text-sm font-semibold mb-1 prose-code text-accent">requires</div><div class="text-sm text-slate-500">Tools the skill needs (e.g. <code class="inline">run_python</code>). Omit for writing-only skills.</div></div>
+      </div>
+      <p class="text-slate-600 mb-2"><strong>Tips for a good skill body:</strong></p>
+      <ul class="space-y-2 text-sm text-slate-600 mb-4">
+        <li class="flex gap-2"><span class="material-symbols-outlined text-emerald-500 text-base flex-shrink-0">check</span> Be concrete — give the exact steps and a short code example the model can adapt.</li>
+        <li class="flex gap-2"><span class="material-symbols-outlined text-emerald-500 text-base flex-shrink-0">check</span> State design rules (layout, colours, what "good" looks like) so output isn't plain.</li>
+        <li class="flex gap-2"><span class="material-symbols-outlined text-emerald-500 text-base flex-shrink-0">check</span> Save any file to <code class="inline">/work/out/</code> — LexiChat writes it back to your folder.</li>
+        <li class="flex gap-2"><span class="material-symbols-outlined text-emerald-500 text-base flex-shrink-0">check</span> Length is free — the body only loads when used, so it never bloats your chats.</li>
+      </ul>
+      <div class="bg-white border border-slate-200 rounded-xl p-4 flex items-start gap-3">
+        <span class="material-symbols-outlined text-accent flex-shrink-0 mt-0.5">save</span>
+        <div class="text-sm text-slate-600">Drop the folder in <code class="inline">~/.local/share/lexichat/skills/</code> and <strong>restart LexiChat</strong> — your skill appears in Admin → Skills. An in-app editor (and resource uploads, e.g. a .pptx template) is on the roadmap.</div>
+      </div>
+    </section>
+
+    <!-- Sharing -->
+    <section id="sharing" class="mb-4">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">ios_share</span> Sharing
+      </h2>
+      <p class="text-slate-600 mb-4">When you export a <a href="../profiles.html" class="text-accent hover:underline">profile</a>, the skills it uses are remembered too. Built-in skills exist on every install, so an imported profile lights up its skills automatically — nothing else to set up.</p>
+      <div class="bg-slate-100 border border-slate-200 rounded-xl p-4 text-sm text-slate-600">Bundling your <em>custom</em> skills inside an exported profile (so they travel with their content to another machine) is on the roadmap — today, share the <code class="inline">SKILL.md</code> file directly.</div>
+    </section>
+
+  </article>
+</div>
+
+<!-- ── Footer ──────────────────────────────────────────────────────────────── -->
+<footer class="border-t border-slate-200 py-10 px-6">
+  <div class="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+    <div class="flex items-center gap-2">
+      <img src="../resources/lexi1.png" alt="LexiChat" class="w-6 h-6 rounded-lg"/>
+      <span class="text-sm font-semibold">LexiChat</span>
+      <span class="text-sm text-slate-400">— Free</span>
+    </div>
+    <div class="flex items-center gap-6">
+      <a href="../index.html" class="text-sm text-slate-500 hover:text-accent transition-colors">Home</a>
+      <a href="index.html" class="text-sm text-slate-500 hover:text-accent transition-colors">Docs</a>
+      <a href="mailto:info@lexi-chat.com" class="text-sm text-slate-500 hover:text-accent transition-colors">Contact</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
