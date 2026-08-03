@@ -189,9 +189,12 @@ pub enum ProviderKind {
     /// Native Ollama REST — `/api/chat`, `/api/tags`, NDJSON streaming, no auth.
     Ollama,
     /// OpenAI-compatible Chat Completions — `/v1/chat/completions`, `/v1/models`, SSE,
-    /// Bearer auth. Covers OpenAI, Anthropic (compat endpoint), Groq, Together, OpenRouter,
-    /// Mistral, and local servers (LM Studio, llama.cpp, vLLM).
+    /// Bearer auth. Covers OpenAI, Groq, Together, OpenRouter, Mistral, Gemini's compat endpoint,
+    /// and local servers (LM Studio, llama.cpp, vLLM).
     OpenAI,
+    /// Anthropic's OpenAI-compatible endpoint — same request/response shape as OpenAI, but auth is
+    /// `x-api-key` + `anthropic-version` headers (NOT Bearer), and `max_tokens` is required.
+    Anthropic,
 }
 
 impl Default for ProviderKind {
@@ -219,23 +222,28 @@ impl Backend {
     fn chat_url(&self) -> String {
         match self.kind {
             ProviderKind::Ollama => format!("{}/api/chat", self.base()),
-            ProviderKind::OpenAI => format!("{}/chat/completions", self.base()),
+            ProviderKind::OpenAI | ProviderKind::Anthropic => format!("{}/chat/completions", self.base()),
         }
     }
 
     fn models_url(&self) -> String {
         match self.kind {
             ProviderKind::Ollama => format!("{}/api/tags", self.base()),
-            ProviderKind::OpenAI => format!("{}/models", self.base()),
+            ProviderKind::OpenAI | ProviderKind::Anthropic => format!("{}/models", self.base()),
         }
     }
 
-    fn is_openai(&self) -> bool { self.kind == ProviderKind::OpenAI }
+    /// True when the backend speaks the OpenAI request/response dialect (OpenAI proper and
+    /// Anthropic's compat endpoint both do — they differ only in auth).
+    fn is_openai(&self) -> bool { matches!(self.kind, ProviderKind::OpenAI | ProviderKind::Anthropic) }
 
-    /// Attach auth to a request builder (Bearer for OpenAI when a key is set).
+    /// Attach auth to a request builder. OpenAI-style uses Bearer; Anthropic uses `x-api-key` +
+    /// `anthropic-version` (its `/v1/models` and compat chat endpoint reject Bearer).
     fn auth(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match (self.kind, self.api_key.as_deref()) {
             (ProviderKind::OpenAI, Some(k)) if !k.is_empty() => rb.bearer_auth(k),
+            (ProviderKind::Anthropic, Some(k)) if !k.is_empty() =>
+                rb.header("x-api-key", k).header("anthropic-version", "2023-06-01"),
             _ => rb,
         }
     }
@@ -254,8 +262,8 @@ pub async fn list_models(backend: &Backend) -> anyhow::Result<Vec<String>> {
     let mut names: Vec<String> = match backend.kind {
         ProviderKind::Ollama => v["models"].as_array().map(|a| a.iter()
             .filter_map(|m| m["name"].as_str().map(String::from)).collect()).unwrap_or_default(),
-        // OpenAI `/v1/models` → { data: [ { id, ... } ] }
-        ProviderKind::OpenAI => v["data"].as_array().map(|a| a.iter()
+        // OpenAI / Anthropic `/v1/models` → { data: [ { id, ... } ] }
+        ProviderKind::OpenAI | ProviderKind::Anthropic => v["data"].as_array().map(|a| a.iter()
             .filter_map(|m| m["id"].as_str().map(String::from)).collect()).unwrap_or_default(),
     };
     // OpenAI catalogs come unsorted and long — sort for a usable dropdown. Ollama's order
@@ -287,7 +295,7 @@ fn build_chat_request(
             if let Some(t) = options.and_then(|o| o.think) { b["think"] = json!(t); }
             b
         }
-        ProviderKind::OpenAI => {
+        ProviderKind::OpenAI | ProviderKind::Anthropic => {
             let mut b = json!({
                 "model": model,
                 "messages": to_openai_messages(messages),
@@ -295,6 +303,11 @@ fn build_chat_request(
             });
             if !tools.is_empty() { b["tools"] = json!(tools); }
             if let Some(o) = options { apply_openai_options(&mut b, o); }
+            // Anthropic's compat endpoint requires max_tokens; default it when the caller didn't set
+            // one (Response Length = Auto). OpenAI proper leaves it optional.
+            if backend.kind == ProviderKind::Anthropic && b.get("max_tokens").is_none() {
+                b["max_tokens"] = json!(4096);
+            }
             b
         }
     }
@@ -998,7 +1011,7 @@ pub async fn complete(backend: &Backend, model: &str, system: &str, user: &str) 
                     .ok()
                     .and_then(|v| match backend.kind {
                         ProviderKind::Ollama => v["message"]["content"].as_str().map(String::from),
-                        ProviderKind::OpenAI => v["choices"][0]["message"]["content"].as_str().map(String::from),
+                        ProviderKind::OpenAI | ProviderKind::Anthropic => v["choices"][0]["message"]["content"].as_str().map(String::from),
                     })
                     .unwrap_or_default();
                 return Ok(content);
@@ -2284,6 +2297,24 @@ mod tests {
         // num_ctx <= 0 means "no cap" — never trims regardless of size.
         let mut big_wire = vec![msg("tool", Some(&"x".repeat(200_000)), Some("t"))];
         assert_eq!(fit_wire_to_context(&mut big_wire, &tools, 0, None), 0);
+    }
+
+    #[test]
+    fn anthropic_backend_uses_openai_shape_and_requires_max_tokens() {
+        let be = Backend { kind: ProviderKind::Anthropic,
+            base_url: "https://api.anthropic.com/v1".into(), api_key: Some("sk-ant-x".into()) };
+        // OpenAI-shaped URLs + request/response dialect.
+        assert!(be.is_openai());
+        assert_eq!(be.chat_url(), "https://api.anthropic.com/v1/chat/completions");
+        assert_eq!(be.models_url(), "https://api.anthropic.com/v1/models");
+        // max_tokens defaulted when the caller sets none (Anthropic's compat endpoint requires it).
+        let body = build_chat_request(&be, "claude-opus-4-8", &[], &[], None, None, true);
+        assert_eq!(body["max_tokens"], serde_json::json!(4096));
+        assert_eq!(body["model"], "claude-opus-4-8");
+        // A caller-provided value wins.
+        let opts = ChatOptions { num_predict: Some(1000), ..Default::default() };
+        let body2 = build_chat_request(&be, "claude-opus-4-8", &[], &[], Some(&opts), None, true);
+        assert_eq!(body2["max_tokens"], serde_json::json!(1000));
     }
 
     #[test]

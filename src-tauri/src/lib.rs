@@ -148,6 +148,7 @@ pub fn dirs_path() -> std::path::PathBuf {
 fn backend_from(provider: Option<String>, base_url: String, api_key: Option<String>) -> ollama::Backend {
     let kind = match provider.as_deref() {
         Some("openai") => ollama::ProviderKind::OpenAI,
+        Some("anthropic") => ollama::ProviderKind::Anthropic,
         _ => ollama::ProviderKind::Ollama,
     };
     ollama::Backend { kind, base_url, api_key: api_key.filter(|k| !k.is_empty()) }
@@ -800,6 +801,7 @@ struct SaveSkillArgs {
     id: String,
     name: String,
     description: String,
+    #[serde(default)] category: String,
     #[serde(default)] requires: Vec<String>,
     body: String,
 }
@@ -807,7 +809,7 @@ struct SaveSkillArgs {
 /// Create or update a CUSTOM skill (built-in ids are rejected). Returns the reloaded catalogue.
 #[tauri::command]
 fn save_skill(args: SaveSkillArgs, state: State<'_, AppState>) -> Result<Vec<skills::RegisteredSkill>, String> {
-    skills::write_skill(&args.id, &args.name, &args.description, &args.requires, &args.body)?;
+    skills::write_skill(&args.id, &args.name, &args.description, &args.category, &args.requires, &args.body)?;
     let loaded = skills::load_skills();
     *state.skills.lock().unwrap() = loaded.clone();
     Ok(loaded)
@@ -830,6 +832,7 @@ struct ImportSkillArgs {
     #[serde(default)] id: Option<String>,
     name: String,
     description: String,
+    #[serde(default)] category: String,
     #[serde(default)] requires: Vec<String>,
     body: String,
     #[serde(default)] resources: Vec<ResourceBlob>,
@@ -853,7 +856,7 @@ fn import_skill(args: ImportSkillArgs, state: State<'_, AppState>) -> Result<Str
         Some(i) if !i.trim().is_empty() && !skills::is_builtin(i) && !ids.iter().any(|e| e == i) => i.trim().to_string(),
         _ => skills::unique_skill_id(&args.name, &ids),
     };
-    skills::write_skill(&id, &args.name, &args.description, &args.requires, &args.body)?;
+    skills::write_skill(&id, &args.name, &args.description, &args.category, &args.requires, &args.body)?;
     for r in &args.resources {
         if let Ok(bytes) = B64.decode(r.b64.trim()) {
             let _ = skills::add_resource(&id, &r.name, &bytes); // best-effort; skip a bad resource
@@ -898,7 +901,7 @@ fn export_skill_bundle(id: String, state: State<'_, AppState>) -> Result<serde_j
     let resources: Vec<ResourceBlob> = s.resources.iter().filter_map(|r|
         skills::read_resource(&id, r).ok().map(|b| ResourceBlob { name: r.clone(), b64: B64.encode(&b) })).collect();
     Ok(serde_json::json!({
-        "id": s.id, "name": s.name, "description": s.description,
+        "id": s.id, "name": s.name, "description": s.description, "category": s.category,
         "requires": s.requires, "body": s.body, "resources": resources,
     }))
 }

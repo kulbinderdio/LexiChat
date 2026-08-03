@@ -117,7 +117,7 @@ export interface Profile {
   allowCodeTools?: boolean;
 }
 
-export type ProviderKind = "ollama" | "openai";
+export type ProviderKind = "ollama" | "openai" | "anthropic";
 
 // A configured inference server. Models from every server are shown together in the model
 // dropdown (prefixed with `name`), and each chat is routed to its model's server.
@@ -241,7 +241,7 @@ interface Props {
 type Tab = "profiles" | "tools" | "skills" | "models" | "openapi" | "sparql" | "mcp" | "sandbox" | "server" | "defaults";
 
 /** A loaded skill, from the `get_skills` command. */
-export interface SkillInfo { id: string; name: string; description: string; requires?: string[]; body?: string; builtin?: boolean; resources?: string[]; }
+export interface SkillInfo { id: string; name: string; description: string; category?: string; requires?: string[]; body?: string; builtin?: boolean; resources?: string[]; }
 
 const BUILTIN_TOOLS = [
   { name: "list_files",          label: "List Files",           icon: "📁" },
@@ -490,8 +490,8 @@ function ProfilesTab({ settings, onChange }: { settings: AppSettings; onChange: 
       for (const s of bundle.skills) {
         try {
           const finalId = await invoke<string>("import_skill", { args: {
-            id: s.id, name: s.name, description: s.description, requires: s.requires ?? [], body: s.body,
-            resources: s.resources ?? [],
+            id: s.id, name: s.name, description: s.description, category: s.category ?? "",
+            requires: s.requires ?? [], body: s.body, resources: s.resources ?? [],
           } });
           if (finalId !== s.id) remap[s.id] = finalId;
         } catch (e) { skillWarnings.push(`Skill "${s.name}" couldn't be installed: ${e}`); }
@@ -2162,7 +2162,8 @@ function MCPTab({ stored, onChange }: { stored: StoredMCPServer[]; onChange: (s:
 // Skills are on-demand capability recipes (the model loads one via use_skill). Built-ins are
 // app-managed (re-seeded, read-only — duplicate to edit); custom skills can be created/edited/deleted.
 // Per active profile you also choose which surface (undefined enabledSkillIds = all).
-type SkillDraft = { id: string; name: string; description: string; needsPython: boolean; body: string; isNew: boolean };
+type SkillDraft = { id: string; name: string; description: string; category: string; needsPython: boolean; body: string; isNew: boolean };
+const UNCATEGORISED = "Uncategorised";
 const skillSlug = (name: string) => name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "skill";
 const uniqueSkillId = (base: string, taken: string[]) => {
   if (!taken.includes(base)) return base;
@@ -2173,7 +2174,11 @@ function SkillsTab({ skills, profile, onToggle, onReload }:
   { skills: SkillInfo[]; profile: Profile | null; onToggle: (id: string, on: boolean) => void; onReload: () => void }) {
   const [editing, setEditing] = useState<SkillDraft | null>(null);
   const [viewing, setViewing] = useState<SkillInfo | null>(null);
+  const [query, setQuery] = useState("");
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const enabled = profile ? new Set(profile.enabledSkillIds ?? skills.map(s => s.id)) : new Set(skills.map(s => s.id));
+  // Distinct categories in use (for the editor's move-to dropdown).
+  const categories = [...new Set(skills.map(s => (s.category || "").trim()).filter(Boolean))].sort();
 
   const save = async () => {
     if (!editing || !editing.name.trim()) return;
@@ -2181,6 +2186,7 @@ function SkillsTab({ skills, profile, onToggle, onReload }:
     try {
       await invoke("save_skill", { args: {
         id, name: editing.name.trim(), description: editing.description.trim(),
+        category: editing.category.trim(),
         requires: editing.needsPython ? ["run_python"] : [], body: editing.body,
       } });
       setEditing(null); onReload();
@@ -2203,9 +2209,9 @@ function SkillsTab({ skills, profile, onToggle, onReload }:
   const removeResource = async (skillId: string, name: string) => {
     try { await invoke("remove_skill_resource", { args: { id: skillId, name } }); onReload(); } catch (e) { alert(String(e)); }
   };
-  const editCustom = (s: SkillInfo) => setEditing({ id: s.id, name: s.name, description: s.description, needsPython: !!s.requires?.includes("run_python"), body: s.body ?? "", isNew: false });
-  const duplicate  = (s: SkillInfo) => setEditing({ id: "", name: `${s.name} copy`, description: s.description, needsPython: !!s.requires?.includes("run_python"), body: s.body ?? "", isNew: true });
-  const blank = (): SkillDraft => ({ id: "", name: "", description: "", needsPython: true, body: "# How to do it\n\nDescribe the exact steps here. Save any output to /work/out/.\n", isNew: true });
+  const editCustom = (s: SkillInfo) => setEditing({ id: s.id, name: s.name, description: s.description, category: s.category ?? "", needsPython: !!s.requires?.includes("run_python"), body: s.body ?? "", isNew: false });
+  const duplicate  = (s: SkillInfo) => setEditing({ id: "", name: `${s.name} copy`, description: s.description, category: s.category ?? "", needsPython: !!s.requires?.includes("run_python"), body: s.body ?? "", isNew: true });
+  const blank = (): SkillDraft => ({ id: "", name: "", description: "", category: "", needsPython: true, body: "# How to do it\n\nDescribe the exact steps here. Save any output to /work/out/.\n", isNew: true });
 
   if (viewing) {
     return (
@@ -2219,6 +2225,7 @@ function SkillsTab({ skills, profile, onToggle, onReload }:
             <div className="admin-row-sub">{viewing.description}</div>
             <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
               {viewing.builtin && "Built-in · "}
+              {(viewing.category || "").trim() && `${viewing.category} · `}
               {viewing.requires?.length ? `Requires: ${viewing.requires.join(", ")}` : "No tool requirements (works anywhere)"}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -2272,6 +2279,15 @@ function SkillsTab({ skills, profile, onToggle, onReload }:
               </div>
             </label>
             <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span className="admin-row-title">Category <span style={{ fontWeight: 400, color: "var(--text-tertiary)" }}>(type a new name to create one, or pick an existing category; blank = Uncategorised)</span></span>
+              <input className="admin-input" list="skill-category-list" value={editing.category}
+                placeholder="e.g. Finance"
+                onChange={e => setEditing({ ...editing, category: e.target.value })} />
+              <datalist id="skill-category-list">
+                {categories.map(c => <option key={c} value={c} />)}
+              </datalist>
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               <span className="admin-row-title">Instructions (Markdown)</span>
               <textarea value={editing.body} onChange={e => setEditing({ ...editing, body: e.target.value })}
                 spellCheck={false} rows={14}
@@ -2302,6 +2318,44 @@ function SkillsTab({ skills, profile, onToggle, onReload }:
     );
   }
 
+  // Filter by search, then group by category (empty → Uncategorised), categories sorted with
+  // Uncategorised last; skills sorted by name within each.
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? skills.filter(s => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q) || (s.category || "").toLowerCase().includes(q))
+    : skills;
+  const groups = new Map<string, SkillInfo[]>();
+  for (const s of filtered) {
+    const cat = (s.category || "").trim() || UNCATEGORISED;
+    (groups.get(cat) ?? groups.set(cat, []).get(cat)!).push(s);
+  }
+  const groupNames = [...groups.keys()].sort((a, b) =>
+    a === UNCATEGORISED ? 1 : b === UNCATEGORISED ? -1 : a.localeCompare(b));
+
+  const row = (s: SkillInfo) => (
+    <div key={s.id} className="admin-row" style={{ alignItems: "flex-start", gap: 8 }}>
+      <input type="checkbox" className="admin-checkbox" disabled={!profile} checked={enabled.has(s.id)}
+        onChange={e => onToggle(s.id, e.target.checked)} style={{ marginTop: 3 }} title={profile ? "Offer this skill in the active profile" : "Set a profile active to toggle"} />
+      <div className="admin-row-text" style={{ flex: 1 }}>
+        <span className="admin-row-title" style={{ fontFamily: "monospace" }}>
+          {s.name}
+          {s.builtin && <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 600, color: "var(--purple)", background: "var(--purple-bg)", border: "1px solid var(--purple-border)", borderRadius: 4, padding: "1px 4px", fontFamily: "system-ui" }}>BUILT-IN</span>}
+          {!!s.requires?.includes("run_python") && <span style={{ marginLeft: 6, fontSize: 9, color: "var(--text-tertiary)", fontFamily: "system-ui" }}>🐍 needs Python</span>}
+        </span>
+        <span className="admin-row-sub">{s.description}</span>
+      </div>
+      <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+        <button className="link-btn" onClick={() => setViewing(s)} title="See the full recipe (read-only)">View</button>
+        {s.builtin
+          ? <button className="link-btn" onClick={() => duplicate(s)} title="Copy to a new editable skill">Duplicate</button>
+          : <>
+              <button className="link-btn" onClick={() => editCustom(s)}>Edit</button>
+              <button className="link-btn" style={{ color: "var(--danger, #dc2626)" }} onClick={() => del(s.id, s.name)}>Delete</button>
+            </>}
+      </div>
+    </div>
+  );
+
   return (
     <div className="admin-scroll">
       <section className="admin-section">
@@ -2313,30 +2367,29 @@ function SkillsTab({ skills, profile, onToggle, onReload }:
           On-demand recipes the model loads with <span style={{ fontFamily: "monospace" }}>use_skill</span> when a task calls for one — only their one-line descriptions sit in the prompt.{" "}
           {profile ? <>Tick which ones <strong>{profile.name}</strong> offers.</> : <>Set a profile active (Profiles tab) to choose which it offers; all are available by default.</>}
         </div>
+        <div style={{ display: "flex", padding: "0 16px 8px" }}>
+          <input className="admin-input" value={query} onChange={e => setQuery(e.target.value)}
+            placeholder={`Search ${skills.length} skills…`} />
+        </div>
         {skills.length === 0 && <div className="admin-row-sub" style={{ padding: 8 }}>No skills loaded.</div>}
-        {skills.map(s => (
-          <div key={s.id} className="admin-row" style={{ alignItems: "flex-start", gap: 8 }}>
-            <input type="checkbox" className="admin-checkbox" disabled={!profile} checked={enabled.has(s.id)}
-              onChange={e => onToggle(s.id, e.target.checked)} style={{ marginTop: 3 }} title={profile ? "Offer this skill in the active profile" : "Set a profile active to toggle"} />
-            <div className="admin-row-text" style={{ flex: 1 }}>
-              <span className="admin-row-title" style={{ fontFamily: "monospace" }}>
-                {s.name}
-                {s.builtin && <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 600, color: "var(--purple)", background: "var(--purple-bg)", border: "1px solid var(--purple-border)", borderRadius: 4, padding: "1px 4px", fontFamily: "system-ui" }}>BUILT-IN</span>}
-                {!!s.requires?.includes("run_python") && <span style={{ marginLeft: 6, fontSize: 9, color: "var(--text-tertiary)", fontFamily: "system-ui" }}>🐍 needs Python</span>}
-              </span>
-              <span className="admin-row-sub">{s.description}</span>
+        {skills.length > 0 && filtered.length === 0 && <div className="admin-row-sub" style={{ padding: 8 }}>No skills match "{query}".</div>}
+        {groupNames.map(cat => {
+          const items = groups.get(cat)!.sort((a, b) => a.name.localeCompare(b.name));
+          // When searching, force sections open so matches are always visible.
+          const isCollapsed = !q && collapsed.has(cat);
+          return (
+            <div key={cat} style={{ marginBottom: 6 }}>
+              <button
+                onClick={() => setCollapsed(prev => { const n = new Set(prev); n.has(cat) ? n.delete(cat) : n.add(cat); return n; })}
+                style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", background: "none", border: "none", cursor: "pointer", padding: "6px 4px", color: "var(--text-secondary)", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                <span style={{ fontSize: 9, transform: isCollapsed ? "rotate(-90deg)" : "none", transition: "transform .12s" }}>▼</span>
+                {cat}
+                <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>({items.length})</span>
+              </button>
+              {!isCollapsed && items.map(row)}
             </div>
-            <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-              <button className="link-btn" onClick={() => setViewing(s)} title="See the full recipe (read-only)">View</button>
-              {s.builtin
-                ? <button className="link-btn" onClick={() => duplicate(s)} title="Copy to a new editable skill">Duplicate</button>
-                : <>
-                    <button className="link-btn" onClick={() => editCustom(s)}>Edit</button>
-                    <button className="link-btn" style={{ color: "var(--danger, #dc2626)" }} onClick={() => del(s.id, s.name)}>Delete</button>
-                  </>}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </section>
     </div>
   );
@@ -2402,7 +2455,7 @@ interface Preset { label: string; provider: ProviderKind; baseUrl: string; needs
 const SERVER_PRESETS: Preset[] = [
   { label: "Ollama (local)",            provider: "ollama", baseUrl: "http://localhost:11434",        needsKey: false },
   { label: "OpenAI",                    provider: "openai", baseUrl: "https://api.openai.com/v1",     needsKey: true  },
-  { label: "Anthropic (OpenAI-compat)", provider: "openai", baseUrl: "https://api.anthropic.com/v1",  needsKey: true  },
+  { label: "Anthropic",                 provider: "anthropic", baseUrl: "https://api.anthropic.com/v1", needsKey: true },
   { label: "Google Gemini (OpenAI-compat)", provider: "openai", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", needsKey: true },
   { label: "Groq",                      provider: "openai", baseUrl: "https://api.groq.com/openai/v1", needsKey: true  },
   { label: "Together",                  provider: "openai", baseUrl: "https://api.together.xyz/v1",    needsKey: true  },
@@ -2467,6 +2520,7 @@ function ServerTab({ settings, onChange }: {
                   onChange={e => update(s.id, { provider: e.target.value as ProviderKind })}>
                   <option value="ollama">Ollama</option>
                   <option value="openai">OpenAI-compatible</option>
+                  <option value="anthropic">Anthropic</option>
                 </select>
                 <select className="admin-input" style={{ flex: 1 }}
                   value={SERVER_PRESETS.find(p => p.provider === s.provider && p.baseUrl === s.baseUrl)?.label ?? ""}
@@ -2478,11 +2532,11 @@ function ServerTab({ settings, onChange }: {
               </div>
               <input className="admin-input" style={{ fontFamily: "monospace", marginTop: 8 }} value={s.baseUrl}
                 onChange={e => update(s.id, { baseUrl: e.target.value })}
-                placeholder={s.provider === "openai" ? "https://api.openai.com/v1" : "http://localhost:11434"} />
-              {s.provider === "openai" && (
+                placeholder={s.provider === "anthropic" ? "https://api.anthropic.com/v1" : s.provider === "openai" ? "https://api.openai.com/v1" : "http://localhost:11434"} />
+              {s.provider !== "ollama" && (
                 <input className="admin-input" type="password" style={{ fontFamily: "monospace", marginTop: 8 }} value={s.apiKey ?? ""}
                   onChange={e => update(s.id, { apiKey: e.target.value || undefined })}
-                  placeholder="API key (blank for keyless local servers)" />
+                  placeholder={s.provider === "anthropic" ? "Anthropic API key (sk-ant-…)" : "API key (blank for keyless local servers)"} />
               )}
               <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
                 <button className="btn" onClick={() => test(s)} disabled={st === "testing"}>Test</button>

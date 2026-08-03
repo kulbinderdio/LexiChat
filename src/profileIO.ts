@@ -6,7 +6,7 @@ import { BUILTIN_OPENAPI_SPEC_IDS, BUILTIN_SPARQL_ENDPOINT_IDS } from "./AdminPa
 
 /** A custom skill bundled into a profile export so it travels with its content (built-ins don't
  *  need bundling — they exist on every install and resolve by id). */
-export interface SkillBundle { id: string; name: string; description: string; requires?: string[]; body: string; resources?: { name: string; b64: string }[]; }
+export interface SkillBundle { id: string; name: string; description: string; category?: string; requires?: string[]; body: string; resources?: { name: string; b64: string }[]; }
 
 // Envelope v2 bundles the profile AND the definitions of every API it enables, with all
 // secrets stripped, so an import wires the profile up identically on another machine.

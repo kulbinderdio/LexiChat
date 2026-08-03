@@ -19,6 +19,9 @@ pub struct RegisteredSkill {
     /// when the active profile enables all of them; empty = instructions-only, offered anywhere.
     #[serde(default)]
     pub requires: Vec<String>,
+    /// Free-form category for grouping in the UI (e.g. "Deliverables"). Empty = Uncategorised.
+    #[serde(default)]
+    pub category: String,
     /// The markdown instructions body — returned to the model by `use_skill`, not in the base prompt.
     #[serde(default)]
     pub body: String,
@@ -78,11 +81,28 @@ pub fn is_builtin(id: &str) -> bool {
     BUILTIN_SKILLS.iter().any(|(bid, _)| *bid == id)
 }
 
+/// Default category for a built-in skill (so the shipped skills group sensibly without hardcoding a
+/// `category:` line in all 17 constants). Empty if not a known built-in.
+fn builtin_category(id: &str) -> &'static str {
+    match id {
+        "presentation" | "branded-deck" | "spreadsheet-model" | "branded-report"
+            | "invoice-quote" | "fillable-pdf" => "Deliverables",
+        "dashboard" | "geospatial-map" | "data-cleaning" | "chart-styling" => "Data & visuals",
+        "literature-review" | "citation-format" | "plain-english" | "meeting-notes"
+            | "email-draft" => "Research & writing",
+        "local-area-brief" | "api-explainer" => "Domain",
+        _ => "",
+    }
+}
+
 /// Serialise a skill's fields back into `SKILL.md` text (frontmatter + body).
-fn to_skill_md(name: &str, description: &str, requires: &[String], body: &str) -> String {
+fn to_skill_md(name: &str, description: &str, category: &str, requires: &[String], body: &str) -> String {
     let mut s = String::from("---\n");
     s.push_str(&format!("name: {}\n", name.trim()));
     s.push_str(&format!("description: {}\n", description.trim().replace('\n', " ")));
+    if !category.trim().is_empty() {
+        s.push_str(&format!("category: {}\n", category.trim()));
+    }
     if !requires.is_empty() {
         s.push_str(&format!("requires: [{}]\n", requires.join(", ")));
     }
@@ -94,13 +114,13 @@ fn to_skill_md(name: &str, description: &str, requires: &[String], body: &str) -
 
 /// Write a custom skill's `SKILL.md` to disk (creating its folder). Built-in ids are rejected —
 /// they're re-seeded from constants each launch, so a custom skill must use its own id.
-pub fn write_skill(id: &str, name: &str, description: &str, requires: &[String], body: &str) -> Result<(), String> {
+pub fn write_skill(id: &str, name: &str, description: &str, category: &str, requires: &[String], body: &str) -> Result<(), String> {
     let id = id.trim();
     if id.is_empty() { return Err("skill id is empty".into()); }
     if is_builtin(id) { return Err(format!("'{id}' is a built-in skill and can't be overwritten — duplicate it to a new id instead")); }
     let dir = skills_dir().join(id);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join("SKILL.md"), to_skill_md(name, description, requires, body)).map_err(|e| e.to_string())
+    std::fs::write(dir.join("SKILL.md"), to_skill_md(name, description, category, requires, body)).map_err(|e| e.to_string())
 }
 
 /// Delete a custom skill's folder. Built-ins can't be deleted.
@@ -139,18 +159,22 @@ pub fn parse_skill_md(id: &str, text: &str) -> Option<RegisteredSkill> {
 
     let mut name = String::new();
     let mut description = String::new();
+    let mut category = String::new();
     let mut requires = Vec::new();
     for line in front.lines() {
         let line = line.trim();
         if let Some(v) = line.strip_prefix("name:") { name = v.trim().to_string(); }
         else if let Some(v) = line.strip_prefix("description:") { description = v.trim().to_string(); }
+        else if let Some(v) = line.strip_prefix("category:") { category = v.trim().to_string(); }
         else if let Some(v) = line.strip_prefix("requires:") {
             requires = v.trim().trim_start_matches('[').trim_end_matches(']')
                 .split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
         }
     }
     if name.is_empty() { name = id.to_string(); }
-    Some(RegisteredSkill { id: id.to_string(), name, description, requires, body, builtin: is_builtin(id), resources: Vec::new() })
+    // Built-ins group by a default category unless their frontmatter overrides it.
+    if category.is_empty() { category = builtin_category(id).to_string(); }
+    Some(RegisteredSkill { id: id.to_string(), name, description, category, requires, body, builtin: is_builtin(id), resources: Vec::new() })
 }
 
 /// Load every skill from disk (each direct subdirectory of the skills dir with a `SKILL.md`).
@@ -843,14 +867,23 @@ mod tests {
 
     #[test]
     fn to_skill_md_round_trips_through_the_parser() {
-        let md = to_skill_md("my-skill", "Does a thing.", &["run_python".into()], "# How\nStep one.\n");
+        let md = to_skill_md("my-skill", "Does a thing.", "My Category", &["run_python".into()], "# How\nStep one.\n");
         let s = parse_skill_md("my-skill", &md).unwrap();
         assert_eq!(s.name, "my-skill");
         assert_eq!(s.description, "Does a thing.");
+        assert_eq!(s.category, "My Category");
         assert_eq!(s.requires, vec!["run_python"]);
         assert!(s.body.starts_with("# How"));
-        // no requires line when empty
-        assert!(!to_skill_md("x", "y", &[], "body").contains("requires:"));
+        // no requires / category lines when empty
+        assert!(!to_skill_md("x", "y", "", &[], "body").contains("requires:"));
+        assert!(!to_skill_md("x", "y", "", &[], "body").contains("category:"));
+    }
+
+    #[test]
+    fn builtin_skills_get_default_categories() {
+        assert_eq!(parse_skill_md("presentation", PRESENTATION_SKILL).unwrap().category, "Deliverables");
+        assert_eq!(parse_skill_md("citation-format", CITATION_FORMAT_SKILL).unwrap().category, "Research & writing");
+        assert_eq!(parse_skill_md("dashboard", DASHBOARD_SKILL).unwrap().category, "Data & visuals");
     }
 
     #[test]

@@ -1397,8 +1397,25 @@ fn extract_text_from_html(html: &str) -> String {
         .join("\n")
 }
 
+/// Extract the main article via readability (isolates the primary content, dropping nav/menus/ads/
+/// boilerplate) — a big quality jump over the raw tag stripper on real article pages. Returns None
+/// when readability can't find substantial content (JS shells, odd markup), so callers fall back.
+fn readability_extract(html: &str, url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let mut input = html.as_bytes();
+    let product = readability::extractor::extract(&mut input, &parsed).ok()?;
+    let text: String = product.text
+        .lines().map(|l| l.trim()).filter(|l| !l.is_empty())
+        .collect::<Vec<_>>().join("\n");
+    if text.trim().is_empty() { None } else { Some(text) }
+}
+
 fn extract_and_truncate_html(html: &str, url: &str) -> String {
-    let text = extract_text_from_html(html);
+    // Prefer readability's main-content extraction; fall back to the raw stripper when it finds
+    // little (short pages, non-article markup), so nothing regresses.
+    let text = readability_extract(html, url)
+        .filter(|t| t.len() >= 200)
+        .unwrap_or_else(|| extract_text_from_html(html));
     if text.is_empty() {
         return format!("No readable text found at '{url}'");
     }
@@ -1728,6 +1745,37 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    // ── readability extraction (fetch_webpage) ───────────────────────────────
+
+    #[test]
+    fn readability_isolates_article_and_drops_chrome() {
+        let html = r#"<!doctype html><html><head><title>T</title></head><body>
+            <nav><a href="/">Home</a> <a href="/about">About</a> <a href="/contact">Contact</a></nav>
+            <header><div class="ad">Buy now! Special offer only today click here</div></header>
+            <article>
+              <h1>The History of Tea</h1>
+              <p>Tea was first discovered in ancient China several thousand years ago, and it quickly
+                 became one of the most widely consumed beverages across the entire world.</p>
+              <p>Over the centuries the practice of drinking tea spread along trade routes into India,
+                 the Middle East, and eventually Europe, where it reshaped social customs and economies.</p>
+            </article>
+            <footer>Copyright 2026 · Privacy Policy · Terms of Service</footer>
+            </body></html>"#;
+        let text = readability_extract(html, "https://example.com/tea").expect("should extract");
+        assert!(text.contains("discovered in ancient China"), "main content kept: {text}");
+        assert!(text.contains("trade routes"), "second paragraph kept");
+        // Boilerplate chrome is dropped.
+        assert!(!text.contains("Privacy Policy"), "footer dropped: {text}");
+        assert!(!text.contains("Special offer"), "ad dropped: {text}");
+    }
+
+    #[test]
+    fn readability_extract_falls_back_on_junk() {
+        // No article content → None, so extract_and_truncate_html uses the raw stripper.
+        assert!(readability_extract("<html><body></body></html>", "https://x.com").is_none());
+        assert!(readability_extract("not even html", "not a url").is_none());
+    }
 
     // ── content-type classification (fetch_webpage) ──────────────────────────
 
