@@ -271,7 +271,7 @@ export function AdvancedParamsContent({
         <span title="How long to keep the model loaded in RAM. e.g. 5m, 1h, -1 for forever." style={{ fontSize: 12, fontWeight: 500, cursor: "help" }}>Keep-alive ?</span>
         <input type="text"
           value={draft.keepAlive ?? ""}
-          placeholder="e.g. 5m, 1h, -1 for forever (default: 5m)"
+          placeholder="e.g. 30m, 1h, -1 for forever (default: 30m)"
           onChange={e => set("keepAlive", e.target.value || undefined)}
           style={{ width: "100%", marginTop: 4, padding: "5px 8px", fontSize: 12, background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)", fontFamily: "monospace" }}
         />

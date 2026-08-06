@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, KeyboardEvent, ChangeEvent } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, KeyboardEvent, ChangeEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ReactMarkdown, { Components } from "react-markdown";
@@ -46,6 +46,8 @@ interface ChatMessage {
   toolImages?: string[];     // base64 data: image URLs from a tool result (e.g. a Mapbox map)
   artifact?: { title: string; html: string }; // model-authored HTML artifact (create_artifact)
   savePrompt?: string[];     // run_python output files awaiting a folder — rendered with a Save button
+  fullResult?: string;       // FULL untruncated tool result (connector viewer) — NOT persisted
+  fullTruncated?: boolean;   // true if even fullResult hit the display cap
 }
 
 // MCP servers approved to render/interact with apps this session (frontend mirror
@@ -598,6 +600,28 @@ function ToolTimer({ startedAt, durationMs }: { startedAt?: number; durationMs?:
   return null;
 }
 
+// One tool-call badge: name + live timer, with the (potentially long) parameters collapsed behind
+// a "params ▼" toggle so they don't take up room until you want to see them.
+function ToolCallBadge({ tc }: { tc: ToolCall }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="tool-badge">
+      <div className="tool-badge-main">
+        <span className="tool-badge-icon">⚡</span>
+        <span className="tool-badge-name">{tc.name}</span>
+        {tc.args && (
+          <button className="tool-badge-args-toggle" onClick={() => setOpen(o => !o)}
+            title={open ? "Hide parameters" : "Show parameters"}>
+            params {open ? "▲" : "▼"}
+          </button>
+        )}
+        <ToolTimer startedAt={tc.startedAt} durationMs={tc.durationMs} />
+      </div>
+      {tc.args && open && <pre className="tool-badge-args">{tc.args}</pre>}
+    </div>
+  );
+}
+
 function AssistantMessage({ msg, onExport, thinkingAt }: { msg: ChatMessage; onExport?: (msgId: string) => void; thinkingAt?: number | null }) {
   const showThinking = msg.streaming && !msg.text && (!msg.toolCalls || msg.toolCalls.length === 0);
   return (
@@ -626,16 +650,7 @@ function AssistantMessage({ msg, onExport, thinkingAt }: { msg: ChatMessage; onE
 
         {msg.toolCalls && msg.toolCalls.length > 0 && (
           <div className="tool-calls">
-            {msg.toolCalls.map((tc, i) => (
-              <div key={i} className="tool-badge">
-                <div className="tool-badge-main">
-                  <span className="tool-badge-icon">⚡</span>
-                  <span className="tool-badge-name">{tc.name}</span>
-                  {tc.args && <span className="tool-badge-args">{tc.args}</span>}
-                </div>
-                <ToolTimer startedAt={tc.startedAt} durationMs={tc.durationMs} />
-              </div>
-            ))}
+            {msg.toolCalls.map((tc, i) => <ToolCallBadge key={i} tc={tc} />)}
           </div>
         )}
 
@@ -953,7 +968,7 @@ export function McpAppFrame({ ui, toolName, onSend }: { ui: ToolUi; toolName: st
             post({ jsonrpc: "2.0", id, result: {
               protocolVersion: "2026-01-26",
               hostCapabilities: {},
-              hostInfo: { name: "LexiChat", version: "2.3.1" },
+              hostInfo: { name: "LexiChat", version: "2.3.2" },
               hostContext: {
                 toolInfo: {
                   id: "1",
@@ -1101,10 +1116,185 @@ function ArtifactFrame({ title, html }: { title: string; html: string }) {
   );
 }
 
+// ── Connector data viewer (OpenAPI / MCP / SPARQL structured results) ───────────
+// Renders a tool's structured response (JSON/CSV) as a readable table/grid, with a Raw view,
+// Copy, and Export — so the user can verify the data AS RETURNED, independent of what the model
+// then says about it. Fed by the FULL (untruncated) result when the backend provides it.
+function stripHttpPrefix(s: string): string { return s.replace(/^HTTP\s+\d{3}\s*\n/, ""); }
+const RECORD_KEYS = ["records", "results", "data", "items", "rows", "obs", "features", "members", "correlations", "value"];
+
+type ParsedResult =
+  | { kind: "table"; columns: string[]; rows: Record<string, unknown>[] }
+  | { kind: "object"; entries: [string, unknown][] }
+  | { kind: "list"; items: unknown[] }
+  | { kind: "json"; value: unknown }
+  | null;
+
+function recordArray(v: unknown): Record<string, unknown>[] | null {
+  return Array.isArray(v) && v.length > 0 && v.every(x => x && typeof x === "object" && !Array.isArray(x))
+    ? (v as Record<string, unknown>[]) : null;
+}
+function columnsOf(rows: Record<string, unknown>[]): string[] {
+  const cols: string[] = [];
+  for (const r of rows) for (const k of Object.keys(r)) if (!cols.includes(k)) cols.push(k);
+  return cols;
+}
+function parseCsv(t: string): { columns: string[]; rows: Record<string, unknown>[] } | null {
+  const lines = t.split(/\r?\n/).filter(l => l.length > 0);
+  if (lines.length < 2) return null;
+  const delim = lines[0].includes("\t") ? "\t" : lines[0].includes(",") ? "," : null;
+  if (!delim) return null;
+  const header = lines[0].split(delim).map(h => h.trim());
+  if (header.length < 2) return null;
+  const rowsRaw = lines.slice(1).map(l => l.split(delim));
+  if (!rowsRaw.every(r => Math.abs(r.length - header.length) <= 1)) return null;
+  const rows = rowsRaw.map(cells => { const o: Record<string, unknown> = {}; header.forEach((h, i) => o[h] = cells[i] ?? ""); return o; });
+  return { columns: header, rows };
+}
+function parseStructured(text: string): ParsedResult {
+  const t = stripHttpPrefix(text).trim();
+  if (!t) return null;
+  if (t.startsWith("{") || t.startsWith("[")) {
+    let v: unknown;
+    try { v = JSON.parse(t); } catch { return null; } // truncated/invalid JSON → let caller fall back
+    const arr = recordArray(v);
+    if (arr) return { kind: "table", columns: columnsOf(arr), rows: arr };
+    if (Array.isArray(v)) return { kind: "list", items: v };
+    if (v && typeof v === "object") {
+      for (const k of RECORD_KEYS) {
+        const inner = recordArray((v as Record<string, unknown>)[k]);
+        if (inner) return { kind: "table", columns: columnsOf(inner), rows: inner };
+      }
+      return { kind: "object", entries: Object.entries(v as Record<string, unknown>) };
+    }
+    return { kind: "json", value: v };
+  }
+  const csv = parseCsv(t);
+  return csv ? { kind: "table", columns: csv.columns, rows: csv.rows } : null;
+}
+// CHEAP structured-shape sniff for the render-path decision — no JSON.parse (which, run on every
+// re-render during streaming for a large result, could choke the webview). The real parse happens
+// once, memoized, inside ConnectorResult (and only when the row is expanded).
+function maybeStructured(text: string): boolean {
+  const t = stripHttpPrefix(text).trimStart();
+  if (t[0] === "{" || t[0] === "[") return true;
+  const nl = t.indexOf("\n");
+  return nl > 0 && (t.slice(0, nl).includes(",") || t.slice(0, nl).includes("\t")) && t.indexOf("\n", nl + 1) > 0;
+}
+function cellText(v: unknown): string { return v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v); }
+function toCsv(columns: string[], rows: Record<string, unknown>[]): string {
+  const esc = (s: string) => /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  return columns.map(esc).join(",") + "\n" +
+    rows.map(r => columns.map(c => esc(cellText(r[c]))).join(",")).join("\n");
+}
+
+function ConnectorResult({ name, result, fullResult, fullTruncated, args }:
+  { name: string; result: string; fullResult?: string; fullTruncated?: boolean; args?: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [raw, setRaw] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const data = fullResult ?? result;
+  const parsed = useMemo(() => parseStructured(data), [data]);
+  const rawText = stripHttpPrefix(data);
+  const modelTruncated = !fullResult && /\[truncated[:—]/.test(result);
+  const partial = !!fullTruncated || modelTruncated;
+  const MAX_ROWS = 1000;
+
+  const summary = !parsed ? "data"
+    : parsed.kind === "table"  ? `${parsed.rows.length} row${parsed.rows.length !== 1 ? "s" : ""}`
+    : parsed.kind === "object" ? `${parsed.entries.length} field${parsed.entries.length !== 1 ? "s" : ""}`
+    : parsed.kind === "list"   ? `${parsed.items.length} item${parsed.items.length !== 1 ? "s" : ""}`
+    : "data";
+
+  const copy = async () => { await navigator.clipboard.writeText(rawText); setCopied(true); setTimeout(() => setCopied(false), 1200); };
+  const exportData = async () => {
+    const isTable = parsed?.kind === "table";
+    const ext = isTable ? "csv" : "json";
+    const content = isTable ? toCsv(parsed!.columns, parsed!.rows) : rawText;
+    const safe = name.replace(/[^a-z0-9_-]+/gi, "_") || "data";
+    try {
+      const path = await save({ title: "Export data", defaultPath: `${safe}.${ext}`,
+        filters: [{ name: ext.toUpperCase(), extensions: [ext] }, { name: "All", extensions: ["*"] }] });
+      if (path) await invoke("save_document", { path, content });
+    } catch { /* cancelled */ }
+  };
+
+  const td: React.CSSProperties = { padding: "4px 8px", borderBottom: "1px solid var(--border)", verticalAlign: "top" };
+  return (
+    <div className="msg-tool-result">
+      <div className="tool-result-inner" onClick={() => setExpanded(e => !e)} style={{ cursor: "pointer" }}>
+        <span className="tool-result-check">⚡</span>
+        <span className="tool-result-name">{name}</span>
+        <span className="tool-result-dot">·</span>
+        <span className="tool-result-preview">{summary}</span>
+        {partial && <span style={{ marginLeft: 6, fontSize: 9, color: "var(--warn, #d97706)" }} title="Large response — capped view; use Export for everything">⚠ partial</span>}
+        <span style={{ marginLeft: "auto", fontSize: 10, opacity: 0.4 }}>{expanded ? "▲" : "▼"}</span>
+      </div>
+      {expanded && (
+        <div style={{ padding: "6px 10px 10px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
+            {parsed && parsed.kind !== "json" && (
+              <button className="file-action-chip" onClick={() => setRaw(r => !r)}>{raw ? "Formatted" : "Raw"}</button>
+            )}
+            <button className="file-action-chip" onClick={copy}>{copied ? "Copied ✓" : "Copy"}</button>
+            <button className="file-action-chip" onClick={exportData}>Export</button>
+          </div>
+          {args && (
+            <div style={{ marginBottom: 6 }}>
+              <div style={{ fontSize: 9, fontWeight: 600, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 2 }}>Parameters</div>
+              <pre style={{ margin: 0, padding: "6px 8px", fontSize: 10, lineHeight: 1.45, background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text-secondary)", fontFamily: "'SF Mono','Fira Code',monospace", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 160, overflow: "auto" }}>{args}</pre>
+            </div>
+          )}
+          {partial && (
+            <div style={{ fontSize: 10, color: "var(--warn, #d97706)", marginBottom: 6 }}>
+              {fullTruncated ? "Response exceeded the display cap — Export for the complete data." : "The model saw a truncated slice; the full data is shown here."}
+            </div>
+          )}
+          <div style={{ maxHeight: 340, overflow: "auto", border: "1px solid var(--border)", borderRadius: 6, background: "var(--surface2)" }}>
+            {(!parsed || raw) ? (
+              <pre style={{ margin: 0, padding: "8px 10px", fontSize: 11, lineHeight: 1.5, fontFamily: "'SF Mono','Fira Code',monospace", whiteSpace: "pre-wrap", wordBreak: "break-word", color: "var(--text)" }}>{rawText}</pre>
+            ) : parsed.kind === "table" ? (
+              <table style={{ borderCollapse: "collapse", fontSize: 11, width: "100%" }}>
+                <thead><tr>{parsed.columns.map(c => (
+                  <th key={c} style={{ position: "sticky", top: 0, background: "var(--surface3, var(--surface2))", textAlign: "left", padding: "5px 8px", borderBottom: "1px solid var(--border)", fontWeight: 600, whiteSpace: "nowrap" }}>{c}</th>
+                ))}</tr></thead>
+                <tbody>{parsed.rows.slice(0, MAX_ROWS).map((r, i) => (
+                  <tr key={i}>{parsed.columns.map(c => (
+                    <td key={c} style={{ ...td, maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={cellText(r[c])}>{cellText(r[c])}</td>
+                  ))}</tr>
+                ))}</tbody>
+              </table>
+            ) : parsed.kind === "object" ? (
+              <table style={{ borderCollapse: "collapse", fontSize: 11, width: "100%" }}>
+                <tbody>{parsed.entries.map(([k, v]) => (
+                  <tr key={k}>
+                    <td style={{ ...td, fontWeight: 600, whiteSpace: "nowrap", color: "var(--purple)" }}>{k}</td>
+                    <td style={{ ...td, wordBreak: "break-word" }}>{cellText(v)}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            ) : parsed.kind === "list" ? (
+              <ol style={{ margin: 0, padding: "8px 8px 8px 26px", fontSize: 11, lineHeight: 1.6 }}>
+                {parsed.items.slice(0, MAX_ROWS).map((it, i) => <li key={i} style={{ wordBreak: "break-word" }}>{cellText(it)}</li>)}
+              </ol>
+            ) : (
+              <pre style={{ margin: 0, padding: "8px 10px", fontSize: 11, whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "'SF Mono','Fira Code',monospace" }}>{JSON.stringify(parsed.value, null, 2)}</pre>
+            )}
+          </div>
+          {parsed?.kind === "table" && parsed.rows.length > MAX_ROWS && (
+            <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 4 }}>Showing first {MAX_ROWS} of {parsed.rows.length} rows — Export for all.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ToolResultRow({
-  name, result, args, ui, images, artifact, onSend, onAttach,
+  name, result, args, fullResult, fullTruncated, ui, images, artifact, onSend, onAttach,
 }: {
-  name: string; result: string; args?: string; ui?: ToolUi; images?: string[];
+  name: string; result: string; args?: string; fullResult?: string; fullTruncated?: boolean;
+  ui?: ToolUi; images?: string[];
   artifact?: { title: string; html: string };
   onSend: (text: string) => void;
   onAttach: (path: string, prompt: string) => void;
@@ -1135,6 +1325,11 @@ export function ToolResultRow({
   }
   if (FILE_LISTING_TOOLS.has(name)) {
     return <FileBrowserResult name={name} result={result} args={args} onSend={onSend} onAttach={onAttach} />;
+  }
+  // Structured connector data (OpenAPI/MCP/SPARQL JSON or CSV) → the readable data viewer. Checked
+  // before the URL list since web_search returns plain text (not JSON), so it's unaffected.
+  if (maybeStructured(fullResult ?? result)) {
+    return <ConnectorResult name={name} result={result} fullResult={fullResult} fullTruncated={fullTruncated} args={args} />;
   }
   const urls = extractUrlsWithTitles(result);
   if (urls.length > 0) {
@@ -1362,27 +1557,41 @@ export default function App() {
       .filter(m => !(m.role === "assistant" && !m.streaming && !m.text && !(m.toolCalls?.length))));
   };
 
-  // Auto-save the conversation when an agent run finishes (transition running→idle).
+  // Persist the active conversation (upserts by the Rust-side active id, so repeated calls update
+  // the same record). Drops the large full connector-data blob — it's a live-session aid, not
+  // history. Used both on run-completion AND incrementally mid-run, so a webview reload/crash during
+  // a long run can't lose the chat (it's only ever re-created as a "New Chat" on reload otherwise).
+  const saveActiveConversation = useCallback(async () => {
+    const msgs = messagesRef.current;
+    if (msgs.length === 0) return;
+    try {
+      const meta = await invoke<ConversationMeta>("save_active_conversation", {
+        args: {
+          display: msgs.map(m => m.fullResult ? { ...m, fullResult: undefined } : m),
+          profile_id: settings.activeProfileId ?? null,
+          model: selectedModel,
+          message_count: msgs.length,
+        },
+      });
+      setActiveConversationId(meta.id);
+      refreshConversations();
+    } catch { /* empty wire — nothing to save */ }
+  }, [settings.activeProfileId, selectedModel, refreshConversations]);
+
+  // Auto-save when an agent run finishes (transition running→idle).
   const prevRunning = useRef(false);
   useEffect(() => {
     const justFinished = prevRunning.current && !isRunning;
     prevRunning.current = isRunning;
-    if (!justFinished || messages.length === 0) return;
-    (async () => {
-      try {
-        const meta = await invoke<ConversationMeta>("save_active_conversation", {
-          args: {
-            display: messages,
-            profile_id: settings.activeProfileId ?? null,
-            model: selectedModel,
-            message_count: messages.length,
-          },
-        });
-        setActiveConversationId(meta.id);
-        refreshConversations();
-      } catch { /* empty wire — nothing to save */ }
-    })();
+    if (justFinished && messages.length > 0) void saveActiveConversation();
   }, [isRunning]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Incremental autosave DURING a run (debounced) — a mid-run crash then loses nothing.
+  useEffect(() => {
+    if (!isRunning || messages.length === 0) return;
+    const t = setTimeout(() => { void saveActiveConversation(); }, 1500);
+    return () => clearTimeout(t);
+  }, [messages, isRunning, saveActiveConversation]);
 
   const handleSelectConversation = async (id: string) => {
     if (isRunning) return;
@@ -1460,7 +1669,7 @@ export default function App() {
       });
     }).then(u => cleanup.push(u));
 
-    listen<{ name: string; result: string; ui?: ToolUi; images?: string[]; artifact?: { title: string; html: string } }>("agent-tool-result", e => {
+    listen<{ name: string; result: string; full_result?: string; full_truncated?: boolean; ui?: ToolUi; images?: string[]; artifact?: { title: string; html: string } }>("agent-tool-result", e => {
       if (!streamActive()) return;
       setThinkingAt(Date.now()); // tool finished — the model now thinks for the next step
       setMessages(prev => {
@@ -1496,6 +1705,8 @@ export default function App() {
         return [...closed, {
           id: uid(), role: "tool-result",
           text: e.payload.result,
+          fullResult: e.payload.full_result || undefined,
+          fullTruncated: e.payload.full_truncated,
           toolName: e.payload.name,
           toolArgs: matchingCall?.args,
           ui: e.payload.ui,
@@ -2156,6 +2367,8 @@ export default function App() {
                   name={msg.toolName ?? ""}
                   result={msg.text}
                   args={msg.toolArgs}
+                  fullResult={msg.fullResult}
+                  fullTruncated={msg.fullTruncated}
                   ui={msg.ui}
                   images={msg.toolImages}
                   artifact={msg.artifact}
@@ -2282,7 +2495,7 @@ export default function App() {
               Runs entirely on-device via Ollama. Reads files, searches the web,
               calls APIs, and keeps your data private.
             </p>
-            <div className="about-version">Version 2.3.1</div>
+            <div className="about-version">Version 2.3.2</div>
 
             <div className="about-support">
               <div className="about-support-label">Support the project</div>

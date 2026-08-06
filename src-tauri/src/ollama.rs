@@ -75,6 +75,14 @@ pub struct ToolCallEvent {
 pub struct ToolResultEvent {
     pub name: String,
     pub result: String,
+    /// The FULL result (untruncated, capped only at a generous display limit), for the connector
+    /// data viewer — so the user can verify the raw data as returned, independent of what the model
+    /// saw (`result`, which is truncated to protect context). Empty when it equals `result`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub full_result: String,
+    /// True when even `full_result` was clipped at the display cap (multi-MB responses).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub full_truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui: Option<ToolUiPayload>,
     /// Base64 `data:` image URLs pulled from the tool result's image content blocks, rendered
@@ -290,7 +298,9 @@ fn build_chat_request(
             let mut b = json!({ "model": model, "messages": messages, "stream": stream });
             if !tools.is_empty() { b["tools"] = json!(tools); }
             if let Some(o) = options { b["options"] = json!(o); }
-            if let Some(k) = keep_alive { b["keep_alive"] = json!(k); }
+            // Default keep_alive to 30m when the user hasn't set one: Ollama otherwise unloads the
+            // model after 5m idle, so a large local model cold-reloads (tens of seconds) mid-session.
+            b["keep_alive"] = json!(keep_alive.unwrap_or("30m"));
             // `think` is a top-level Ollama field (skipped in the ChatOptions serialization above).
             if let Some(t) = options.and_then(|o| o.think) { b["think"] = json!(t); }
             b
@@ -1300,7 +1310,11 @@ pub async fn agent_loop<R: tauri::Runtime>(
             APIs, SPARQL/linked-data endpoints, MCP servers) are NOT loaded yet. When the task \
             needs one, FIRST call find_tools with a short description of what you need; the matching \
             tools become callable on your next step. Never guess a specialized tool's name before \
-            loading it with find_tools.")
+            loading it with find_tools. IMPORTANT: for any question about specific data, facts, \
+            figures, statistics, records, or a domain your connected tools might cover, call \
+            find_tools FIRST — do NOT jump straight to web_search. web_search is a fallback only for \
+            general open-web information the connected tools don't cover; prefer authoritative \
+            connected tools whenever the topic could match one.")
     } else {
         system_prompt.to_string()
     };
@@ -1618,7 +1632,7 @@ pub async fn agent_loop<R: tauri::Runtime>(
                 if !silent {
                     let _ = app.emit("agent-tool-call", ToolCallEvent { name: name.clone(), args: pretty_args.clone() });
                     let _ = app.emit("agent-tool-result", ToolResultEvent {
-                        name: name.clone(), result: result.clone(), ui: None, images: Vec::new(), artifact: None });
+                        name: name.clone(), result: result.clone(), full_result: String::new(), full_truncated: false, ui: None, images: Vec::new(), artifact: None });
                 }
                 conversation.lock().unwrap().push(WireMessage {
                     role: "tool".into(), content: Some(result),
@@ -1660,7 +1674,7 @@ pub async fn agent_loop<R: tauri::Runtime>(
                 if !silent {
                     let _ = app.emit("agent-tool-call", ToolCallEvent { name: name.clone(), args: pretty_args.clone() });
                     let _ = app.emit("agent-tool-result", ToolResultEvent {
-                        name: name.clone(), result: result.clone(), ui: None, images: Vec::new(), artifact: None });
+                        name: name.clone(), result: result.clone(), full_result: String::new(), full_truncated: false, ui: None, images: Vec::new(), artifact: None });
                 }
                 conversation.lock().unwrap().push(WireMessage {
                     role: "tool".into(), content: Some(result),
@@ -1705,7 +1719,7 @@ pub async fn agent_loop<R: tauri::Runtime>(
                         already have, or take a clearly different approach.]");
                     if !silent {
                         let _ = app.emit("agent-tool-result", ToolResultEvent {
-                            name: name.clone(), result: note.clone(), ui: None, images: Vec::new(), artifact: None });
+                            name: name.clone(), result: note.clone(), full_result: String::new(), full_truncated: false, ui: None, images: Vec::new(), artifact: None });
                     }
                     conversation.lock().unwrap().push(WireMessage {
                         role: "tool".into(), content: Some(note),
@@ -1740,11 +1754,25 @@ pub async fn agent_loop<R: tauri::Runtime>(
             // works from the text it has instead of being nudged toward run_python (which loops
             // chasing a file it can't process, e.g. a PDF).
             let read_for_content = matches!(name.as_str(), "read_file" | "fetch_webpage" | "wiki_read");
+            // Keep the FULL result for the connector data viewer (interactive only) before it's
+            // truncated for the model. Capped at a generous display limit so a multi-MB response
+            // can't bloat the webview / saved chat. Document reads and the URL-list/file views don't
+            // need it, so skip them.
+            const DISPLAY_LIMIT: usize = 512 * 1024;
+            let (full_result, full_truncated) = if !silent && !read_for_content {
+                if result.len() > DISPLAY_LIMIT {
+                    (result.chars().take(DISPLAY_LIMIT).collect::<String>(), true)
+                } else {
+                    (result.clone(), false)
+                }
+            } else { (String::new(), false) };
             let result = if silent || read_for_content {
                 cap_tool_result(result, &name, tool_result_limit)
             } else {
                 offload_tool_result(result, &name, tool_result_limit, &results_dir)
             };
+            // Only send full_result when it actually adds detail over the (truncated) model result.
+            let full_result = if full_result == result { String::new() } else { full_result };
 
             // An MCP-App UI payload, inline images, and/or a model-authored artifact may have been
             // stashed by dispatch_tool.
@@ -1762,6 +1790,8 @@ pub async fn agent_loop<R: tauri::Runtime>(
                 let _ = app.emit("agent-tool-result", ToolResultEvent {
                     name: name.clone(),
                     result: result.clone(),
+                    full_result,
+                    full_truncated,
                     ui,
                     images,
                     artifact,
