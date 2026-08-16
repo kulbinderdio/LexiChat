@@ -8,7 +8,7 @@ import { JobsPanel } from "./JobsPanel";
 import type { JobRun } from "./jobTypes";
 import lexiLogo from "./assets/lexi.png";
 import { AdminPanel, AppSettings, Profile, ServerConfig, StoredOpenAPISpec, StoredSparqlEndpoint, reconcileCatalog } from "./AdminPanel";
-import { runPython, warmPyodide, drainCodeToolCalls, PyFile } from "./pyodide/runner";
+import { runPython, warmPyodide, drainCodeToolCalls, abortPyodideRun, PyFile } from "./pyodide/runner";
 import { dedupeRegistry } from "./profileIO";
 import { ChatParamsButton, ChatParams, DEFAULT_CHAT_PARAMS, resolveParams } from "./ChatParamsPanel";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -98,7 +98,7 @@ const ALL_BUILTIN_TOOLS: ToolSchema[] = [
   { type: "function", function: { name: "fetch_webpage", description: "Fetch and read the full text content of a webpage by URL. Strips HTML and returns readable text. This is the correct tool whenever the user wants to see, read, open, or show an article or page — including the full article behind a web_search result (pass that result's URL). Do NOT refuse such requests or claim you can only summarise; call this tool instead. Also use it to read any specific URL the user provides.", parameters: { type: "object", properties: { url: { type: "string", description: "Full URL to fetch, must start with http:// or https://" } }, required: ["url"] } } },
   { type: "function", function: { name: "get_current_datetime", description: "Get the current local date and time. Returns human-readable, ISO 8601, filename-safe, and Unix timestamp formats. Use whenever you need today's date or a timestamp for a filename.", parameters: { type: "object", properties: {}, required: [] } } },
   { type: "function", function: { name: "run_python", description: "Execute real Python (CPython) in a secure, offline sandbox to compute, analyse data, and CREATE CHARTS. The full standard library plus numpy, pandas, matplotlib, scipy, sympy, openpyxl (read/write Excel .xlsx), beautifulsoup4 (parse HTML), and geopandas with shapely & pyproj (geospatial — plot points/lines/polygons and choropleth MAPS as a matplotlib figure; note there is no online street/satellite basemap offline, so for a street-map backdrop use a connected map tool instead), and python-pptx (build editable PowerPoint .pptx decks — used by the 'presentation' skill) are available — import them normally. These are the ONLY third-party packages, and there is NO network access, so do not import anything else (e.g. requests, scikit-learn, plotly, contextily) — it will fail. Use print() for text output. Files live in a virtual workspace at /work/uploads/: the user's attached files are there — documents (PDF, Word) are ALREADY extracted to plain text, so just open() and read them (do NOT try to PDF-parse); data files (CSV, Excel, JSON) are as-is for pandas. SAVE any output (files, charts) to /work/out/ (kept for the user). Your /work files (and Python variables) PERSIST across run_python calls within the same turn — a chart PNG you saved in one call is still there in the next — and reset only when the user sends a new message. So you can build a task up across calls (e.g. generate chart PNGs in one call, then read them to build a PowerPoint in another). (For a plain read/summary of a document with no computation, prefer the read_file tool — no code or permission needed.) Use normal Python I/O — open(), pathlib, pd.read_csv('/work/uploads/data.csv'). TO SHOW A GRAPH, build a matplotlib figure (e.g. `import matplotlib.pyplot as plt; plt.plot(x, y)`) — it is rendered INLINE in the chat automatically — you do NOT need to save it (do NOT hand-draw ASCII or SVG). Only use plt.savefig('/work/out/name.png') if the user explicitly wants a saved file — /work/out is an in-memory scratch path, but anything you write there is copied to a real folder on the user's disk and the tool result reports that real absolute path. When telling the user where a file was saved, quote the real path from the tool result (the line marked SAVED TO DISK); NEVER tell the user the file is at /work/out (they cannot open that). No network access. Do not read/write paths outside /work.", parameters: { type: "object", properties: { code: { type: "string", description: "The Python source code to execute." } }, required: ["code"] } } },
-  { type: "function", function: { name: "create_artifact", description: "Render a rich, self-contained HTML page inline in the chat, with a Save button (saves as a .html file the user can open in any browser). Use this for polished deliverables — formatted reports, dashboards, styled tables/cards, or simple interactive views — when plain markdown isn't enough. The HTML MUST be fully self-contained: inline all CSS in a <style> tag and any JS in a <script> tag; NO external URLs, fonts, images, or CDNs (they are blocked). To include a chart, map or image you generated earlier THIS TURN (e.g. a matplotlib chart from run_python, or a map), use the placeholder token as the image source: <img src=\"{{figure:1}}\"> for the first such image, {{figure:2}} for the second, and so on (in the order they were created) — LexiChat substitutes the real image. Do NOT paste base64 image data yourself. Any other images must be data: URIs. It renders in a sandboxed frame. Do NOT put your final prose answer inside the artifact — write a short summary in chat and put the rich content in the artifact.", parameters: { type: "object", properties: { title: { type: "string", description: "Short title for the artifact (used as the saved filename and header)." }, html: { type: "string", description: "A complete, self-contained HTML document (or fragment) with all CSS/JS inlined and no external resources." } }, required: ["title", "html"] } } },
+  { type: "function", function: { name: "create_artifact", description: "Render a rich, self-contained HTML page inline in the chat, with a Save button (saves as a .html file the user can open in any browser). Use this for polished deliverables — formatted reports, dashboards, styled tables/cards, or simple interactive views — when plain markdown isn't enough. The HTML MUST be fully self-contained: inline all CSS in a <style> tag and any JS in a <script> tag; NO external URLs, fonts, images, or CDNs (they are blocked) — EXCEPT for maps, where you MAY load Leaflet from unpkg/jsdelivr and OpenStreetMap/Mapbox map tiles (use these to draw a street map with real data points). To include a chart, map or image you generated earlier THIS TURN (e.g. a matplotlib chart from run_python, or a map), use the placeholder token as the image source: <img src=\"{{figure:1}}\"> for the first such image, {{figure:2}} for the second, and so on (in the order they were created) — LexiChat substitutes the real image. Do NOT paste base64 image data yourself. Any other images must be data: URIs. It renders in a sandboxed frame. Do NOT put your final prose answer inside the artifact — write a short summary in chat and put the rich content in the artifact. To show ANY HTML (a page, a map, a dashboard) you MUST call THIS tool with the HTML — NEVER paste raw HTML, a <script>, or an <iframe> into your chat reply, which renders as source text, not a page.", parameters: { type: "object", properties: { title: { type: "string", description: "Short title for the artifact (used as the saved filename and header)." }, html: { type: "string", description: "A complete, self-contained HTML document (or fragment) with all CSS/JS inlined and no external resources." } }, required: ["title", "html"] } } },
 ];
 
 // Built-in tools a chat gets when NO profile is active: read-only / no-side-effect only. Mutating
@@ -262,7 +262,10 @@ const BUILTIN_SPARQL_ENDPOINTS: StoredSparqlEndpoint[] = [
     schema_summary:
       "HM Land Registry open linked data. Two main datasets:\n" +
       "- UK House Price Index (ukhpi:): monthly price statistics per region. Key properties: ukhpi:refRegion, ukhpi:refMonth, ukhpi:averagePrice, ukhpi:housePriceIndex.\n" +
-      "- Price Paid (lrppi:): individual residential property transactions. A lrppi:Transaction has lrppi:pricePaid, lrppi:transactionDate, and lrppi:propertyAddress (an lrcommon:Address with lrcommon:postcode, lrcommon:town, lrcommon:street).",
+      "- Price Paid (lrppi:): individual residential property transactions. A lrppi:Transaction has lrppi:pricePaid, lrppi:transactionDate, lrppi:propertyType, and lrppi:propertyAddress (an lrcommon:Address with lrcommon:postcode, lrcommon:town, lrcommon:street).\n" +
+      "PROPERTY TYPE IS AVAILABLE — the Price Paid data DOES record property type via lrppi:propertyType. Its values are the URIs lrcommon:detached, lrcommon:semi-detached, lrcommon:terraced, lrcommon:flat-maisonette, lrcommon:otherPropertyType. To answer \"average DETACHED price\" filter on `lrppi:propertyType lrcommon:detached` directly — do NOT claim the dataset lacks property type, and do NOT fall back to scraping property portals (Rightmove/Zoopla), which disagree with the official record.\n" +
+      "FILTER SERVER-SIDE, don't bulk-pull: constrain by town/postcode + date range + propertyType IN THE QUERY (with a small LIMIT or an AVG/COUNT aggregate). Do NOT pull thousands of unfiltered rows and filter in Python — a tight filtered query is faster and the endpoint is slow for wide scans. Use xsd:date bounds for a year, e.g. FILTER(?date >= \"2023-01-01\"^^xsd:date && ?date <= \"2023-12-31\"^^xsd:date).\n" +
+      "MATCH CONVENTIONS (wrong forms return 0 rows, do not just retry): lrcommon:postcode must be the FULL postcode WITH its space, e.g. \"DA11 0NA\" — a partial postcode like \"DA11\" matches nothing. lrcommon:town values are stored UPPERCASE, e.g. \"GRAVESEND\" (mixed case matches nothing). Prefer the full postcode for a postcode request; use an UPPERCASE town for a wider area.",
     example_queries: [
       {
         label: "Recent Price Paid records for a postcode",
@@ -277,6 +280,21 @@ const BUILTIN_SPARQL_ENDPOINTS: StoredSparqlEndpoint[] = [
           "  OPTIONAL { ?addr lrcommon:street ?street }\n" +
           "  OPTIONAL { ?addr lrcommon:town ?town }\n" +
           "} ORDER BY DESC(?date) LIMIT 20",
+      },
+      {
+        label: "Average price for ONE property type in a town, in a year (server-side filtered)",
+        query:
+          "PREFIX lrppi: <http://landregistry.data.gov.uk/def/ppi/>\n" +
+          "PREFIX lrcommon: <http://landregistry.data.gov.uk/def/common/>\n" +
+          "PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>\n" +
+          "SELECT (COUNT(?price) AS ?sales) (AVG(?price) AS ?avgPrice) WHERE {\n" +
+          "  ?txn lrppi:pricePaid ?price ;\n" +
+          "       lrppi:transactionDate ?date ;\n" +
+          "       lrppi:propertyType lrcommon:detached ;\n" +
+          "       lrppi:propertyAddress ?addr .\n" +
+          "  ?addr lrcommon:town \"GRAVESEND\" .\n" +
+          "  FILTER(?date >= \"2023-01-01\"^^xsd:date && ?date <= \"2023-12-31\"^^xsd:date)\n" +
+          "}",
       },
     ],
   },
@@ -332,7 +350,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   provider: "ollama",
   maxTools: 30,
   webSearchResults: 10,
-  maxSteps: 20,
+  maxSteps: 12,
   models: [],
   enabledTools: { read_file: true, list_files: true, web_search: true },
   toolRegistry: { mcpServers: [], openapiSpecs: [], sparqlEndpoints: [] },
@@ -1054,11 +1072,14 @@ export function McpAppFrame({ ui, toolName, onSend }: { ui: ToolUi; toolName: st
           <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
             This MCP server wants to display an interactive UI that can call its tools. Only allow apps from servers you trust.
           </div>
-          <button className="btn primary" onClick={async () => {
-            try { await invoke("approve_mcp_app", { args: { server_id: ui.server_id } }); } catch { /* ignore */ }
-            approvedMcpApps.add(ui.server_id);
-            setApproved(true);
-          }}>Allow app</button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn primary" onClick={async () => {
+              try { await invoke("approve_mcp_app", { args: { server_id: ui.server_id } }); } catch { /* ignore */ }
+              approvedMcpApps.add(ui.server_id);
+              setApproved(true);
+            }}>Allow app</button>
+            <button className="btn" onClick={() => { invoke("skip_mcp_app").catch(() => {}); }}>Skip</button>
+          </div>
         </div>
       </div>
     );
@@ -1548,6 +1569,7 @@ export default function App() {
   // Cancel a running agent loop and supersede its stream so late events are dropped.
   const stopActiveRun = () => {
     invoke("stop_generation").catch(() => {});
+    abortPyodideRun(); // kill a runaway run_python (WASM can't be interrupted — terminate + respawn)
     streamEpoch.current += 1;
     setIsRunning(false);
     setThinkingAt(null);
@@ -2027,6 +2049,23 @@ export default function App() {
       const resolved = resolveParams(chatParams);
       const effectiveBase = resolved.systemPromptOverride ?? basePrompt;
 
+      // Latency-aware defaults for a LIGHTWEIGHT profile — one with no connected data tools
+      // (OpenAPI/SPARQL/MCP), no code-mode, and run_python off. Such a profile does short,
+      // conversational turns that can't accumulate large tool results, so two costly defaults are
+      // pure overhead: (1) the model's pre-answer reasoning pass (thinking ON is qwen3's default and
+      // added ~4.6s even to "17×23"), and (2) the 32K agentic context floor (needed only so a long
+      // tool-heavy run isn't front-truncated — a documented failure at 16K). We only FILL these when
+      // the user left them unset; an explicit per-profile reasoning/num_ctx/Extended-context choice
+      // always wins. The turn-budget caps (web-tool cap 4, global cap 15) bound any accumulation a
+      // light profile's web tools could still cause, keeping the smaller context safe.
+      const lightweightProfile = externalParts.length === 0
+        && !(activeProfile?.allowCodeTools || forceAllowCodeToolsRef.current)
+        && !runPythonMaster;
+      const effectiveThink = resolved.think ?? (lightweightProfile ? false : null);
+      const effectiveNumCtx = (lightweightProfile && chatParams.numCtx === undefined && chatParams.contextSize === "short")
+        ? 16384
+        : resolved.numCtx;
+
       // Build context vars block from the active profile
       const contextVars = activeProfile?.contextVars?.filter(v => v.name.trim() && v.value.trim()) ?? [];
       const contextVarsSuffix = contextVars.length > 0
@@ -2053,14 +2092,21 @@ export default function App() {
         ? "\n\nEXACT FIGURES: when a data tool returns numbers (counts, populations, census tables, prices) and you need totals, percentages or a breakdown from them, compute them in run_python — load the tool's JSON, use the category/label fields it returns verbatim (never rename or re-map categories yourself), find the 'Total' row and divide by it for percentages, then report those computed values. Do NOT mentally calculate or round percentages, and never supply a figure from prior knowledge: any number not present in THIS turn's tool output must be reported as \"No data available\", not estimated."
         : "";
 
+      // Street maps with plotted data points: a create_artifact Leaflet + OpenStreetMap map renders
+      // real streets AND the markers; geopandas has no street basemap (points on blank). The #1
+      // failure is the model plotting placeholder/made-up coordinates instead of the real ones.
+      const mapRulesSuffix = runPythonMaster
+        ? "\n\nSTREET MAPS WITH DATA POINTS: to show points on a street map (crime locations, incidents, places), create an INTERACTIVE map with create_artifact using Leaflet + OpenStreetMap tiles (the artifact may load OSM tiles and the Leaflet library) and plot the points as markers. CRITICAL: use the REAL lat/lng from the tool result for EVERY point — NEVER placeholder, example, sample, or made-up coordinates. First extract the exact points in run_python from the actual API response (print them as a JSON array of {lat, lng, label}), then embed THOSE exact points in the map's script and set the view to fit them. Do NOT use geopandas/matplotlib for a street map — it has no basemap and renders points on a blank background (use it only for boundary/choropleth plots). Build the whole map in ONE create_artifact call. CRITICAL: the map HTML must be passed to the create_artifact TOOL — never write HTML, a <script>, or an <iframe> into your chat message (HTML in your reply shows as raw source, NOT a rendered map), and the artifact HTML holds the Leaflet map DIRECTLY (do not wrap it in an inner <iframe>)."
+        : "";
+
       // Code-mode: when the profile allows code to call tools, tell the model about the Python API.
       const codeToolsSuffix = (activeProfile?.allowCodeTools || forceAllowCodeToolsRef.current)
         ? "\n\nCODE-MODE TOOLS: inside run_python you can call registered tools directly. ALWAYS call `tools = await list_tools()` FIRST to get the EXACT tool names and their `parameters` schema — never guess a tool name or a group label. Each entry is {name, description, parameters}. Then `data = await call_tool(\"exact_tool_name\", {\"arg\": \"value\"})` runs one and returns a dict/list (parsed JSON) or string; build the args from the tool's parameters schema. Both are async — you MUST `await` them. Prefer this for multi-source work: fetch with call_tool, then compute/aggregate/plot with pandas/numpy/matplotlib in the same script, instead of many separate tool-call steps."
         : "";
 
       const systemPrompt = allowedDirs.length > 0
-        ? `${effectiveBase}${externalSuffix}${contextVarsSuffix}${wikiSuffix}${codeToolsSuffix}${figuresRulesSuffix}${outputRulesSuffix}${dateSuffix}\nThe user's configured folders are: ${allowedDirs.join(", ")}. Rules for file operations:\n- When reading or listing files without a specified path, use these folders immediately — do not ask for clarification.\n- When writing or saving a file without a specified path, save it to ${allowedDirs[0]} with a sensible filename derived from the content (e.g. sikhism_article.pdf). Never call write_file without a full absolute path.\n- Always use full absolute paths — never '.' or '~'.`
-        : `${effectiveBase}${externalSuffix}${contextVarsSuffix}${wikiSuffix}${codeToolsSuffix}${figuresRulesSuffix}${outputRulesSuffix}${dateSuffix}`;
+        ? `${effectiveBase}${externalSuffix}${contextVarsSuffix}${wikiSuffix}${codeToolsSuffix}${figuresRulesSuffix}${mapRulesSuffix}${outputRulesSuffix}${dateSuffix}\nThe user's configured folders are: ${allowedDirs.join(", ")}. Rules for file operations:\n- When reading or listing files without a specified path, use these folders immediately — do not ask for clarification.\n- When writing or saving a file without a specified path, save it to ${allowedDirs[0]} with a sensible filename derived from the content (e.g. sikhism_article.pdf). Never call write_file without a full absolute path.\n- Always use full absolute paths — never '.' or '~'.`
+        : `${effectiveBase}${externalSuffix}${contextVarsSuffix}${wikiSuffix}${codeToolsSuffix}${figuresRulesSuffix}${mapRulesSuffix}${outputRulesSuffix}${dateSuffix}`;
 
       // MCP servers this profile may use. With no active profile, none are enabled (conservative
       // default) — a profile must opt in. The backend filters strictly by this list.
@@ -2090,13 +2136,13 @@ export default function App() {
           top_k: resolved.topK ?? null,
           repeat_penalty: resolved.repeatPenalty ?? null,
           seed: resolved.seed ?? null,
-          num_ctx: resolved.numCtx,
+          num_ctx: effectiveNumCtx,
           num_predict: resolved.numPredict,
           stop: resolved.stop ?? null,
-          think: resolved.think ?? null,
+          think: effectiveThink,
           keep_alive: resolved.keepAlive ?? null,
           web_search_results: settings.webSearchResults ?? 10,
-          max_steps: settings.maxSteps ?? 20,
+          max_steps: settings.maxSteps ?? 12,
           disabled_mcp_tools: disabledMcpTools,
           enabled_mcp_server_ids: enabledMcpServerIds,
           // null (no profile / undefined) = all skills; a list = only those the profile enables.

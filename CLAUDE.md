@@ -104,6 +104,28 @@ On profile switch, `syncServers()`:
 
 Tauri IPC convention: all commands take a single `args` struct argument: `invoke("command_name", { args: { snake_case_fields } })`. This matches serde's default snake_case deserialization.
 
+## Content Security Policy & the artifact sandbox
+
+The webview CSP is set in `src-tauri/tauri.conf.json` (`app.security.csp`). It's strict by design:
+`default-src 'self'`, images/scripts/styles/connections mostly limited to `'self'`, `data:`, `blob:`,
+and the Tauri `asset:`/`ipc:` origins — so tool results, charts, and model-authored **artifacts**
+(`create_artifact`, rendered in an `sandbox="allow-scripts"` `srcDoc` iframe — see `ArtifactFrame`)
+can't phone home or pull remote code.
+
+**Deliberate exception — map tiles + Leaflet** (added for interactive street maps with plotted data):
+the CSP allows a *scoped* set of hosts — `img-src`/`connect-src` for `*.tile.openstreetmap.org`,
+`*.basemaps.cartocdn.com`, `api.mapbox.com`, `*.tiles.mapbox.com`; `script-src`/`style-src` for
+`unpkg.com` and `cdn.jsdelivr.net` (the Leaflet CDN). This is what lets an artifact render a real
+OSM/Mapbox basemap with markers. **Trade-off:** it loosens the artifact sandbox — an artifact can now
+fetch tiles from those hosts and load Leaflet from those CDNs. Scoped to those reputable hosts, and the
+iframe stays same-origin-isolated (no access to app state), so the blast radius is small, but it IS an
+intentional relaxation. Keep the allow-list minimal; do not broaden it casually.
+
+**Platform nuance:** on macOS (WKWebView) a sandboxed `srcDoc` iframe does NOT inherit the parent CSP,
+so external tiles/scripts load in artifacts even without the allow-list; on Windows/Linux (WebView2 /
+Chromium) the CSP IS inherited and enforced. The allow-list above is what makes maps work consistently
+across all three — don't rely on the WKWebView quirk.
+
 ## State persistence
 
 - All settings stored in `localStorage` via `saveSettings()` / `loadSettings()` in `App.tsx`. Tool definitions (OpenAPI specs, MCP servers, SPARQL endpoints) live once in the global `toolRegistry`; profiles reference them by ID (see Profile scoping), not by copy

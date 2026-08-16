@@ -17,6 +17,10 @@ export interface PyResult {
 }
 
 const LOAD_TIMEOUT_MS = 90_000;
+// Hard ceiling on a single run_python. Pyodide is WASM on a single-threaded worker with no
+// preemption, so a runaway (infinite loop, stuck C-ext) cannot be interrupted — the ONLY way to
+// abort it is to terminate the worker and respawn. This bounds that.
+const RUN_TIMEOUT_MS = 300_000;
 
 let worker: Worker | null = null;
 let ready: Promise<void> | null = null;
@@ -104,6 +108,24 @@ function ensureWorker(): Promise<void> {
 /** Pre-load Pyodide so the first real call (or a scheduled job) doesn't pay cold-start. */
 export function warmPyodide(): void { void ensureWorker(); }
 
+/** Hard-kill the Pyodide worker and respawn a fresh one. The only reliable way to stop a runaway
+ *  (CPU-bound loop / stuck C-extension) since WASM can't be interrupted. Any in-flight runs resolve
+ *  with `reason` so callers never hang. A new runtime warms in the background. */
+export function terminatePyodide(reason: string): void {
+  if (worker) { try { worker.terminate(); } catch { /* already gone */ } }
+  worker = null; ready = null; loadError = null;
+  const stuck = [...pending.values()];
+  pending.clear();
+  for (const cb of stuck) cb({ output: "", images: [], outFiles: [], error: reason });
+  void ensureWorker(); // respawn so the next run isn't cold
+}
+
+/** Abort an in-flight run_python (e.g. the Stop button). No-op if nothing is running, so it doesn't
+ *  needlessly reset a warm, idle worker. */
+export function abortPyodideRun(): void {
+  if (pending.size > 0) terminatePyodide("run_python aborted — the sandbox was reset.");
+}
+
 /** Execute Python in the sandbox with a staged workspace. Never rejects — errors come back on `.error`. */
 // `reset` (default true) wipes the /work workspace before running. The agent loop passes false for
 // run_python calls after the first in a turn, so files written earlier in the turn persist.
@@ -115,7 +137,16 @@ export async function runPython(code: string, files: PyFile[], reset = true): Pr
   const id = ++seq;
   toolCallsRemaining = MAX_TOOL_CALLS_PER_RUN; // reset code-mode call budget per run
   return new Promise<PyResult>((resolve) => {
-    pending.set(id, resolve);
+    let done = false;
+    const finish = (r: PyResult) => { if (done) return; done = true; clearTimeout(timer); pending.delete(id); resolve(r); };
+    // Runaway guard: if the worker doesn't return within RUN_TIMEOUT_MS, kill and respawn it (the
+    // stuck WASM can't be interrupted otherwise) and surface a clear error.
+    const timer = setTimeout(() => {
+      finish({ output: "", images: [], outFiles: [],
+        error: `run_python exceeded ${RUN_TIMEOUT_MS / 1000}s and was aborted — the sandbox was reset. Simplify the code or process less data.` });
+      terminatePyodide("run_python timed out — the sandbox was reset.");
+    }, RUN_TIMEOUT_MS);
+    pending.set(id, finish);
     worker!.postMessage({ type: "run", id, code, files, reset });
   });
 }

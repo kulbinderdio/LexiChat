@@ -87,7 +87,7 @@ fn builtin_category(id: &str) -> &'static str {
     match id {
         "presentation" | "branded-deck" | "spreadsheet-model" | "branded-report"
             | "invoice-quote" | "fillable-pdf" => "Deliverables",
-        "dashboard" | "geospatial-map" | "data-cleaning" | "chart-styling" => "Data & visuals",
+        "dashboard" | "geospatial-map" | "map" | "data-cleaning" | "chart-styling" => "Data & visuals",
         "literature-review" | "citation-format" | "plain-english" | "meeting-notes"
             | "email-draft" => "Research & writing",
         "local-area-brief" | "api-explainer" => "Domain",
@@ -223,6 +223,7 @@ const BUILTIN_SKILLS: &[(&str, &str)] = &[
     ("geospatial-map", GEOSPATIAL_SKILL),
     ("branded-report", BRANDED_REPORT_SKILL),
     ("dashboard", DASHBOARD_SKILL),
+    ("map", MAP_SKILL),
     ("local-area-brief", LOCAL_AREA_SKILL),
     ("literature-review", LITERATURE_REVIEW_SKILL),
     ("citation-format", CITATION_FORMAT_SKILL),
@@ -561,6 +562,54 @@ headings, ~65-character line length, `font-variant-numeric: tabular-nums` for fi
 charts made in `run_python` via `{{figure:N}}`. Keep it fully self-contained (no external URLs). Put
 a short summary in chat and the full report in the artifact; tell the user they can Save it or print
 to PDF/Word.
+"##;
+
+const MAP_SKILL: &str = r##"---
+name: map
+description: Draw an interactive STREET map with data points plotted on it (crime locations, incidents, a set of places) — real OpenStreetMap streets + markers. Use whenever the user wants points shown on a map.
+requires: [run_python]
+---
+# Interactive street map with data points
+
+Build a real slippy map (OpenStreetMap streets) with the points plotted, via `create_artifact` using
+Leaflet. Do NOT use geopandas/matplotlib for this — it has no street basemap and draws points on a
+blank background.
+
+THE #1 RULE: plot the REAL coordinates. Never use placeholder, example, sample, or made-up lat/lng.
+1. First, in `run_python`, extract the exact points from the actual tool result (e.g. the police
+   crime JSON) and print them as a JSON array of {lat, lng, label} — the true coordinates of every
+   point. If the data was offloaded to /work/data, read it there.
+2. Then call `create_artifact` with the template below, PASTING those exact points into the `points`
+   array. Set `centre` to the resolved postcode/area centre.
+
+```html
+<!doctype html><html><head><meta charset="utf-8">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>html,body,#map{height:100%;margin:0}</style></head>
+<body><div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// REAL points from the tool result (replace with the actual data — NEVER placeholders):
+const points = [ {lat:51.441,lng:0.372,label:"Anti-social behaviour"} /* … all real points … */ ];
+const centre = [51.441, 0.372];               // resolved postcode/area centre
+const map = L.map('map').setView(centre, 15);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+  { maxZoom: 19, attribution: '© OpenStreetMap contributors' }).addTo(map);
+L.circleMarker(centre, { radius:8, color:'#111', fillColor:'#fff', fillOpacity:1, weight:3 })
+  .addTo(map).bindPopup('Centre');
+const grp = L.featureGroup(points.map(p =>
+  L.circleMarker([p.lat, p.lng], { radius:5, color:'#e11d48', fillColor:'#e11d48', fillOpacity:.7, weight:1 })
+    .bindPopup(p.label))).addTo(map);
+if (points.length) map.fitBounds(grp.getBounds().extend(centre), { padding:[30,30] });
+</script></body></html>
+```
+
+Colour markers by category if useful, keep the postcode centre marked distinctly, and fit the view to
+the points. Build the whole map in ONE create_artifact call.
+
+CRITICAL: pass the HTML to the create_artifact TOOL — do NOT write HTML or an <iframe> into your chat
+reply (it shows as raw source, not a map). The artifact HTML contains the Leaflet map directly; do not
+wrap it in an inner <iframe>.
 "##;
 
 const DASHBOARD_SKILL: &str = r##"---
@@ -914,6 +963,6 @@ mod tests {
             assert!(!s.description.is_empty(), "skill '{id}' missing description");
             assert!(s.body.len() > 50, "skill '{id}' body looks empty");
         }
-        assert_eq!(BUILTIN_SKILLS.len(), 17);
+        assert_eq!(BUILTIN_SKILLS.len(), 18);
     }
 }

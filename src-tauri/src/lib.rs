@@ -62,6 +62,10 @@ pub struct AppState {
     /// MCP server ids the user has approved to render/interact with apps this
     /// session (set by `approve_mcp_app`; reset on restart).
     pub apps_allowed: Mutex<std::collections::HashSet<String>>,
+    /// The agent loop parks a sender here while it waits for the user to Allow/Skip an unapproved
+    /// MCP-app before continuing, so a model can't stack more prompts (or keep flailing) while a
+    /// deliverable awaits your decision. Resolved by `approve_mcp_app` (true) / `skip_mcp_app` (false).
+    pub pending_app_approval: Mutex<Option<tokio::sync::oneshot::Sender<bool>>>,
     /// Id of the saved conversation the current chat maps to, so auto-save
     /// updates the same record. `None` = a fresh chat not yet persisted.
     pub active_conversation_id: Mutex<Option<String>>,
@@ -112,6 +116,7 @@ impl Default for AppState {
             pending_tool_images: Mutex::new(Vec::new()),
             pending_artifact: Mutex::new(None),
             apps_allowed: Mutex::new(std::collections::HashSet::new()),
+            pending_app_approval: Mutex::new(None),
             active_conversation_id: Mutex::new(None),
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pending_output_files: Mutex::new(Vec::new()),
@@ -380,7 +385,7 @@ pub struct SendMessageArgs {
 }
 
 fn default_web_search_results() -> usize { 10 }
-fn default_max_steps() -> usize { 20 }
+fn default_max_steps() -> usize { 12 }
 
 #[tauri::command]
 async fn send_message(
@@ -1479,6 +1484,16 @@ pub struct ApproveAppArgs { pub server_id: String }
 #[tauri::command]
 fn approve_mcp_app(args: ApproveAppArgs, state: State<'_, AppState>) -> Result<(), String> {
     state.apps_allowed.lock().unwrap().insert(args.server_id);
+    // Unblock the agent loop if it's paused waiting for this decision.
+    if let Some(tx) = state.pending_app_approval.lock().unwrap().take() { let _ = tx.send(true); }
+    Ok(())
+}
+
+/// User dismissed an MCP-app approval prompt (don't allow it) — unblock the paused agent loop so it
+/// continues without approving the server.
+#[tauri::command]
+fn skip_mcp_app(state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(tx) = state.pending_app_approval.lock().unwrap().take() { let _ = tx.send(false); }
     Ok(())
 }
 
@@ -2095,6 +2110,7 @@ pub fn run() {
             reconnect_mcp_server,
             set_mcp_servers,
             approve_mcp_app,
+            skip_mcp_app,
             mcp_ui_call_tool,
             set_openapi_specs,
             oauth2_authorize,

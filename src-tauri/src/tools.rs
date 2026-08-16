@@ -1269,22 +1269,24 @@ async fn web_search(args: &Value, max_results: usize) -> String {
 
 /// How `fetch_webpage` should treat a response based on its Content-Type.
 #[derive(Debug, PartialEq)]
-enum FetchKind { Pdf, Html, Binary }
+enum FetchKind { Pdf, Html, Text, Binary }
 
-/// Classify a Content-Type so fetch_webpage can extract PDFs, parse HTML/text,
-/// and avoid decoding binary files (images, archives, …) as garbage "HTML".
+/// Classify a Content-Type so fetch_webpage can extract PDFs, parse HTML into readable text, return
+/// structured/plain text (JSON, XML, text/plain) VERBATIM — running the HTML extractor on JSON
+/// corrupts and truncates it (the cause of mangled NOMIS/API data) — and refuse binary files.
 fn classify_content_type(ctype: &str) -> FetchKind {
     let c = ctype.to_ascii_lowercase();
     if c.contains("pdf") {
         FetchKind::Pdf
-    } else if c.is_empty()
-        || c.starts_with("text/")
-        || c.contains("html")
-        || c.contains("xml")
-        || c.contains("json")
-        || c.contains("javascript")
-    {
+    } else if c.contains("html") {
         FetchKind::Html
+    } else if c.contains("json") || c.contains("xml") || c.contains("javascript")
+        || c.starts_with("text/")
+    {
+        // Structured/plain text — return it raw so the model gets valid JSON/XML, not HTML-stripped.
+        FetchKind::Text
+    } else if c.is_empty() {
+        FetchKind::Html // unknown type → assume a web page
     } else {
         FetchKind::Binary
     }
@@ -1361,6 +1363,15 @@ async fn fetch_webpage(args: &Value) -> String {
                 "[The URL '{url}' returned non-text content ({kind}), which fetch_webpage cannot read. \
                  It is a binary file (image, archive, etc.) — skip it or find an HTML/text source.]"
             );
+        }
+        FetchKind::Text => {
+            // Return JSON/XML/plain text verbatim — no readability/tag-stripping/entity-decoding,
+            // which would corrupt structured API data. The agent loop caps/handles the size.
+            return match resp.text().await {
+                Ok(t) if !t.trim().is_empty() => t,
+                Ok(_) => format!("[The URL '{url}' returned an empty response.]"),
+                Err(e) => format!("Error reading response from '{url}': {e}"),
+            };
         }
         FetchKind::Html => {}
     }
@@ -1786,9 +1797,12 @@ mod tests {
         assert_eq!(classify_content_type("application/pdf; charset=binary"), FetchKind::Pdf);
         // HTML / text / structured all take the normal text path.
         assert_eq!(classify_content_type("text/html; charset=utf-8"), FetchKind::Html);
-        assert_eq!(classify_content_type("application/xhtml+xml"), FetchKind::Html);
-        assert_eq!(classify_content_type("text/plain"), FetchKind::Html);
-        assert_eq!(classify_content_type("application/json"), FetchKind::Html);
+        assert_eq!(classify_content_type("application/xhtml+xml"), FetchKind::Html); // xhtml is html
+        // Structured/plain text is returned verbatim (not HTML-stripped) so API JSON stays intact.
+        assert_eq!(classify_content_type("text/plain"), FetchKind::Text);
+        assert_eq!(classify_content_type("application/json"), FetchKind::Text);
+        assert_eq!(classify_content_type("application/json; charset=utf-8"), FetchKind::Text);
+        assert_eq!(classify_content_type("text/xml"), FetchKind::Text);
         assert_eq!(classify_content_type(""), FetchKind::Html); // missing header → try as HTML
         // Real binaries must NOT be decoded as garbage HTML.
         assert_eq!(classify_content_type("image/png"), FetchKind::Binary);

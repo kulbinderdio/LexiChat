@@ -45,7 +45,7 @@ export function resolveParams(p: ChatParams): {
 } {
   // Only non-default presets override Ollama — "balanced", "auto", "short" let
   // the model use its own defaults so we never accidentally truncate tool schemas.
-  const styleTemp: Record<ChatParams["style"], number | undefined> = { precise: 0.2, balanced: undefined, creative: 1.0 };
+  const styleTemp: Record<ChatParams["style"], number | undefined> = { precise: 0.05, balanced: undefined, creative: 1.0 };
   const lengthTokens: Record<ChatParams["responseLength"], number | undefined> = { short: 256, medium: 1024, long: 4096, auto: undefined };
   // Cap the context window explicitly. "Standard" used to be `undefined` (= the model's native
   // context), which on big-context models like qwen3.6 (262K) meant every reply span up a huge KV
@@ -120,17 +120,23 @@ export function AdvancedParamsContent({
   draft, onChange,
 }: { draft: ChatParams; onChange: (p: ChatParams) => void }) {
   const set = <K extends keyof ChatParams>(k: K, v: ChatParams[K]) => onChange({ ...draft, [k]: v });
-  const styleTemp: Record<ChatParams["style"], number | undefined> = { precise: 0.2, balanced: undefined, creative: 1.0 };
+  const styleTemp: Record<ChatParams["style"], number | undefined> = { precise: 0.05, balanced: undefined, creative: 1.0 };
   const lengthTokens: Record<ChatParams["responseLength"], number | undefined> = { short: 256, medium: 1024, long: 4096, auto: undefined };
   const ctxTokens: Record<ChatParams["contextSize"], number | undefined> = { short: 32768, long: 131072 };
 
-  const SliderRow = ({ label, tooltip, value, min, max, step, presetValue, onChg }: {
+  const SliderRow = ({ label, tooltip, value, min, max, step, presetValue, presetLabel, onChg }: {
     label: string; tooltip?: string; value: number | undefined;
     min: number; max: number; step: number; presetValue: number | undefined;
+    // When set (and no explicit override), the presetValue is what's ACTUALLY applied (e.g. the
+    // response-style temperature) — so show it with this label instead of "model default".
+    presetLabel?: string;
     onChg: (v: number | undefined) => void;
   }) => {
     const display = value ?? presetValue ?? min;
-    const usingDefault = value === undefined;
+    const overridden = value !== undefined;
+    const fromPreset = !overridden && presetValue !== undefined && presetLabel !== undefined;
+    const usingDefault = !overridden && !fromPreset; // truly model default (nothing applied)
+    const fmt = (n: number) => n.toFixed(step < 1 ? 2 : 0);
     return (
       <div style={{ marginBottom: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
@@ -139,19 +145,20 @@ export function AdvancedParamsContent({
           </span>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{ fontSize: 12, fontFamily: "monospace", fontWeight: 600 }}>
-              {usingDefault ? "model default" : display.toFixed(step < 1 ? 2 : 0)}
+              {overridden ? fmt(display) : fromPreset ? `${fmt(presetValue!)} · ${presetLabel}` : "model default"}
             </span>
-            {!usingDefault && (
-              <button onClick={() => onChg(undefined)} title="Reset to model default"
+            {overridden && (
+              <button onClick={() => onChg(undefined)} title="Reset to preset / model default"
                 style={{ fontSize: 10, color: "var(--text-tertiary)", background: "none", border: "none", cursor: "pointer", padding: 0 }}>↺</button>
             )}
           </div>
         </div>
         <input type="range" min={min} max={max} step={step} value={display}
           onChange={e => onChg(parseFloat(e.target.value))}
-          style={{ width: "100%", accentColor: "var(--accent)", opacity: usingDefault ? 0.45 : 1 }}
+          style={{ width: "100%", accentColor: "var(--accent)", opacity: usingDefault ? 0.45 : fromPreset ? 0.8 : 1 }}
         />
         {usingDefault && <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 2 }}>Not set — model uses its own default</div>}
+        {fromPreset && <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 2 }}>Applied by the {presetLabel} — drag to override</div>}
       </div>
     );
   };
@@ -195,7 +202,9 @@ export function AdvancedParamsContent({
       <SliderRow label="Temperature"
         tooltip="Controls randomness. Lower = more focused, Higher = more creative."
         value={draft.temperature} min={0} max={2} step={0.05}
-        presetValue={styleTemp[draft.style]} onChg={v => set("temperature", v)} />
+        presetValue={styleTemp[draft.style]}
+        presetLabel={styleTemp[draft.style] !== undefined ? `${draft.style} style` : undefined}
+        onChg={v => set("temperature", v)} />
 
       <SliderRow label="Top-p (nucleus sampling)"
         tooltip="Controls vocabulary diversity. 0.9 = considers top 90% of probability mass."

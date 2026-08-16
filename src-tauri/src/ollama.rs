@@ -1067,6 +1067,13 @@ fn extract_json_array(s: &str) -> String {
 /// loop is about to end but nothing was ever streamed to the chat window. Forces one
 /// final, tool-free completion and streams it; if the model still returns nothing, emits
 /// a plain message so the chat is never left blank.
+/// Shown when a run ends with the model having produced nothing at all — no text and no tool call.
+/// Honest (doesn't pretend a deliverable was made) and actionable.
+const EMPTY_RUN_MESSAGE: &str = "The model returned an empty response — it didn't answer or use any \
+    tools for this request. This often happens with a complex multi-part follow-up on a local model. \
+    Try: rephrasing it as a single, self-contained request; turning Reasoning on; or using a more \
+    capable model.";
+
 async fn ensure_final_answer<R: tauri::Runtime>(
     backend: &Backend,
     model: &str,
@@ -1080,7 +1087,12 @@ async fn ensure_final_answer<R: tauri::Runtime>(
         let mut conv = conversation.lock().unwrap();
         conv.push(WireMessage {
             role: "user".into(),
-            content: Some("Now write your complete answer to the user, based on all the work above. Respond in full. Do NOT call any tools.".into()),
+            content: Some("Now write your final answer to the user, based ONLY on the actual tool \
+                results and work shown above. Do NOT call any tools. IMPORTANT: state only what the \
+                results above actually support. If the user asked you to produce a map, chart, image, \
+                file, or other artifact and it is NOT already shown above, do NOT claim you created \
+                it — say plainly that you were unable to produce it and why. Never invent data, \
+                figures, or a deliverable that isn't really there.".into()),
             tool_calls: None, tool_call_id: None, name: None, images: None,
         });
     }
@@ -1290,6 +1302,22 @@ pub async fn agent_loop<R: tauri::Runtime>(
     // that because the args differ. Past the cap, further calls are refused, not executed.
     let mut tool_name_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     const TOOL_NAME_CALL_CAP: usize = 8;
+    // Web tools flail more readily (endless search/scrape variations) and have authoritative
+    // alternatives, so they get a tighter per-name cap than data/API tools.
+    const WEB_TOOL_CALL_CAP: usize = 4;
+    // Turn-level runaway guards. The per-tool caps above miss a model that *rotates* among tools
+    // (web_search→fetch→query→run_python…), keeping each under its cap while the turn total and
+    // wall-clock climb unbounded (observed: 30 calls / 13 min, and a 65-min map spiral). These
+    // bound the WHOLE turn regardless of which tools are used.
+    const GLOBAL_TOOL_CALL_CAP: usize = 15; // total tool dispatches across ALL tools this turn
+    const TURN_WALL_BUDGET_SECS: u64 = 360; // ~6 min; a stuck local model shouldn't outlive this
+    // Once a deliverable artifact (a map/chart/HTML) has been produced, only a little cleanup is
+    // allowed before we force the final answer — otherwise the model "refines" it for many minutes
+    // (observed: create_artifact, then 3 more run_python calls, still looping at 65 min).
+    const POST_ARTIFACT_TOOL_BUDGET: usize = 2;
+    let mut total_tool_calls: usize = 0;
+    let mut artifact_emitted = false;
+    let mut post_artifact_tool_calls: usize = 0;
     // Discovery mode: names of external tools the model has loaded this run via `find_tools`.
     let mut loaded_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
     // Whether the model ever streamed a genuine FINAL answer — text on a step with NO tool call.
@@ -1297,6 +1325,11 @@ pub async fn agent_loop<R: tauri::Runtime>(
     // ends the run immediately, so if we reach a salvage site with only narration behind us, the
     // user still has no answer and we must force one. (Counting narration here caused blank replies.)
     let mut streamed_text = false;
+    // Whether the model called ANY tool this run. If a run ends with no final text AND no tool ever
+    // ran, the model produced nothing — forcing a prose "summary" then makes it FABRICATE a
+    // deliverable it never made (e.g. "here's your map"). In that case we give an honest message
+    // instead of a salvaged (and invented) answer.
+    let mut any_tool_ran = false;
     // Set once a server reports the model can't do tool calling; the rest of the run then sends no
     // tools (and skips per-step selection) so a non-tool model degrades to plain chat.
     let mut disable_tools = false;
@@ -1339,6 +1372,25 @@ pub async fn agent_loop<R: tauri::Runtime>(
                     total_ms: run_start.elapsed().as_millis() as u64,
                     error: None,
                 });
+            }
+            return Ok(());
+        }
+        // Turn-level runaway guard: before sampling another (expensive) step, stop if this turn has
+        // spent its global tool-call budget, exceeded the wall-clock budget, or kept tooling after a
+        // deliverable artifact was already produced. Force a written final answer and end, so a stuck
+        // local model can't burn 10-60 minutes. Mirrors the severity-based force-answer path below.
+        let over_budget = total_tool_calls >= GLOBAL_TOOL_CALL_CAP
+            || run_start.elapsed().as_secs() >= TURN_WALL_BUDGET_SECS
+            || (artifact_emitted && post_artifact_tool_calls > POST_ARTIFACT_TOOL_BUDGET);
+        if over_budget {
+            if !silent {
+                if !streamed_text {
+                    ensure_final_answer(backend, model, system_prompt, conversation,
+                        options.as_ref(), keep_alive.as_deref(), app).await;
+                }
+                let _ = app.emit("agent-done", DoneEvent { error: None });
+                let _ = app.emit("debug-run-done", DebugRunDoneEvent {
+                    total_ms: run_start.elapsed().as_millis() as u64, error: None });
             }
             return Ok(());
         }
@@ -1551,11 +1603,17 @@ pub async fn agent_loop<R: tauri::Runtime>(
             }
 
             if !silent {
-                // Never end an interactive run blank — salvage a written answer if the
-                // model finished without ever streaming any text.
+                // Never end an interactive run blank. If the model did real work but didn't
+                // summarise, salvage a written answer (honesty-guarded). If it did NOTHING (no text,
+                // no tool), don't force a prose "answer" — that just makes it fabricate a deliverable
+                // it never produced; give an honest message instead.
                 if !streamed_text {
-                    ensure_final_answer(backend, model, system_prompt, conversation,
-                        options.as_ref(), keep_alive.as_deref(), app).await;
+                    if any_tool_ran {
+                        ensure_final_answer(backend, model, system_prompt, conversation,
+                            options.as_ref(), keep_alive.as_deref(), app).await;
+                    } else {
+                        let _ = app.emit("agent-token", TokenEvent { delta: EMPTY_RUN_MESSAGE.into() });
+                    }
                 }
                 let _ = app.emit("agent-done", DoneEvent { error: None });
                 let _ = app.emit("debug-run-done", DebugRunDoneEvent {
@@ -1572,6 +1630,7 @@ pub async fn agent_loop<R: tauri::Runtime>(
         consecutive_text_without_tools = 0;
         narrate_nudges = 0;
         nudged = false;
+        any_tool_ran = true;
 
         // Loop breaker: has this exact tool-call set been issued before — consecutively OR just
         // repeatedly this run? Either way the model is stuck. `severity` unifies both: 2 = first
@@ -1613,6 +1672,11 @@ pub async fn agent_loop<R: tauri::Runtime>(
             let name = &call.function.name;
             let args = &call.function.arguments;
             let pretty_args = serde_json::to_string_pretty(args).unwrap_or_default();
+            // Count every dispatched call toward the turn-level budgets (checked at the next step's
+            // top). Calls made after a deliverable artifact also count against the tighter post-
+            // artifact budget so the model doesn't endlessly "refine" a map/chart it already produced.
+            total_tool_calls += 1;
+            if artifact_emitted { post_artifact_tool_calls += 1; }
 
             // Discovery meta-tool: load specialized tools matching the query so they become
             // callable next step. Handled here (not dispatch_tool) because it mutates the per-run
@@ -1713,7 +1777,11 @@ pub async fn agent_loop<R: tauri::Runtime>(
             // to answer. run_python is exempt (iterative coding is legitimate; it has its own guard).
             if name != "run_python" {
                 let n = { let c = tool_name_counts.entry(name.clone()).or_insert(0); *c += 1; *c };
-                if n > TOOL_NAME_CALL_CAP {
+                let cap = match name.as_str() {
+                    "web_search" | "fetch_webpage" => WEB_TOOL_CALL_CAP,
+                    _ => TOOL_NAME_CALL_CAP,
+                };
+                if n > cap {
                     let note = format!("[You have called '{name}' {n} times this turn without \
                         resolving the request. STOP calling it — answer using the results you \
                         already have, or take a clearly different approach.]");
@@ -1786,6 +1854,11 @@ pub async fn agent_loop<R: tauri::Runtime>(
                     .unwrap_or((None, Vec::new(), None))
             } else { (None, Vec::new(), None) };
             let had_media = ui.is_some() || !images.is_empty() || artifact.is_some();
+            // A deliverable artifact was produced — arm the post-artifact budget so the model wraps
+            // up soon instead of looping on further "refinements" (see POST_ARTIFACT_TOOL_BUDGET).
+            if artifact.is_some() { artifact_emitted = true; }
+            // Server id of any MCP-app UI this call produced — used to pause below for approval.
+            let ui_server = ui.as_ref().map(|u| u.server_id.clone());
             if !silent {
                 let _ = app.emit("agent-tool-result", ToolResultEvent {
                     name: name.clone(),
@@ -1796,6 +1869,30 @@ pub async fn agent_loop<R: tauri::Runtime>(
                     images,
                     artifact,
                 });
+            }
+
+            // Pause on an UNAPPROVED MCP-app: wait for the user to Allow/Skip before the loop
+            // continues, so the model can't stack more approval prompts (or keep flailing) while a
+            // deliverable awaits your decision. Once a server is approved, later apps don't pause.
+            if let Some(server_id) = ui_server {
+                if let Some(state) = app.try_state::<crate::AppState>() {
+                    let needs = !state.apps_allowed.lock().unwrap().contains(&server_id);
+                    if needs {
+                        let (tx, mut rx) = tokio::sync::oneshot::channel::<bool>();
+                        *state.pending_app_approval.lock().unwrap() = Some(tx);
+                        let _ = app.emit("agent-status", serde_json::json!({ "phase": "Waiting for app approval…" }));
+                        // Wait for Allow/Skip, the Stop button, or a 5-minute safety timeout.
+                        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+                        while std::time::Instant::now() < deadline {
+                            match tokio::time::timeout(std::time::Duration::from_millis(200), &mut rx).await {
+                                Ok(_) => break,                                   // Allow or Skip
+                                Err(_) => if cancel.load(Ordering::SeqCst) { break; }, // Stop pressed
+                            }
+                        }
+                        *state.pending_app_approval.lock().unwrap() = None;
+                    }
+                }
+                if cancel.load(Ordering::SeqCst) { break; }
             }
 
             // When an interactive UI or image was rendered, tell the model so it references
