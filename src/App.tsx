@@ -99,6 +99,7 @@ const ALL_BUILTIN_TOOLS: ToolSchema[] = [
   { type: "function", function: { name: "get_current_datetime", description: "Get the current local date and time. Returns human-readable, ISO 8601, filename-safe, and Unix timestamp formats. Use whenever you need today's date or a timestamp for a filename.", parameters: { type: "object", properties: {}, required: [] } } },
   { type: "function", function: { name: "run_python", description: "Execute real Python (CPython) in a secure, offline sandbox to compute, analyse data, and CREATE CHARTS. The full standard library plus numpy, pandas, matplotlib, scipy, sympy, openpyxl (read/write Excel .xlsx), beautifulsoup4 (parse HTML), and geopandas with shapely & pyproj (geospatial — plot points/lines/polygons and choropleth MAPS as a matplotlib figure; note there is no online street/satellite basemap offline, so for a street-map backdrop use a connected map tool instead), and python-pptx (build editable PowerPoint .pptx decks — used by the 'presentation' skill) are available — import them normally. These are the ONLY third-party packages, and there is NO network access, so do not import anything else (e.g. requests, scikit-learn, plotly, contextily) — it will fail. Use print() for text output. Files live in a virtual workspace at /work/uploads/: the user's attached files are there — documents (PDF, Word) are ALREADY extracted to plain text, so just open() and read them (do NOT try to PDF-parse); data files (CSV, Excel, JSON) are as-is for pandas. SAVE any output (files, charts) to /work/out/ (kept for the user). Your /work files (and Python variables) PERSIST across run_python calls within the same turn — a chart PNG you saved in one call is still there in the next — and reset only when the user sends a new message. So you can build a task up across calls (e.g. generate chart PNGs in one call, then read them to build a PowerPoint in another). (For a plain read/summary of a document with no computation, prefer the read_file tool — no code or permission needed.) Use normal Python I/O — open(), pathlib, pd.read_csv('/work/uploads/data.csv'). TO SHOW A GRAPH, build a matplotlib figure (e.g. `import matplotlib.pyplot as plt; plt.plot(x, y)`) — it is rendered INLINE in the chat automatically — you do NOT need to save it (do NOT hand-draw ASCII or SVG). Only use plt.savefig('/work/out/name.png') if the user explicitly wants a saved file — /work/out is an in-memory scratch path, but anything you write there is copied to a real folder on the user's disk and the tool result reports that real absolute path. When telling the user where a file was saved, quote the real path from the tool result (the line marked SAVED TO DISK); NEVER tell the user the file is at /work/out (they cannot open that). No network access. Do not read/write paths outside /work.", parameters: { type: "object", properties: { code: { type: "string", description: "The Python source code to execute." } }, required: ["code"] } } },
   { type: "function", function: { name: "create_artifact", description: "Render a rich, self-contained HTML page inline in the chat, with a Save button (saves as a .html file the user can open in any browser). Use this for polished deliverables — formatted reports, dashboards, styled tables/cards, or simple interactive views — when plain markdown isn't enough. The HTML MUST be fully self-contained: inline all CSS in a <style> tag and any JS in a <script> tag; NO external URLs, fonts, images, or CDNs (they are blocked) — EXCEPT for maps, where you MAY load Leaflet from unpkg/jsdelivr and OpenStreetMap/Mapbox map tiles (use these to draw a street map with real data points). To include a chart, map or image you generated earlier THIS TURN (e.g. a matplotlib chart from run_python, or a map), use the placeholder token as the image source: <img src=\"{{figure:1}}\"> for the first such image, {{figure:2}} for the second, and so on (in the order they were created) — LexiChat substitutes the real image. Do NOT paste base64 image data yourself. Any other images must be data: URIs. It renders in a sandboxed frame. Do NOT put your final prose answer inside the artifact — write a short summary in chat and put the rich content in the artifact. To show ANY HTML (a page, a map, a dashboard) you MUST call THIS tool with the HTML — NEVER paste raw HTML, a <script>, or an <iframe> into your chat reply, which renders as source text, not a page.", parameters: { type: "object", properties: { title: { type: "string", description: "Short title for the artifact (used as the saved filename and header)." }, html: { type: "string", description: "A complete, self-contained HTML document (or fragment) with all CSS/JS inlined and no external resources." } }, required: ["title", "html"] } } },
+  { type: "function", function: { name: "generate_image", description: "Generate an image from a text description using the local, offline image model (stable-diffusion). Use this whenever the user asks you to create, draw, generate, illustrate, paint, or make an image, picture, logo, or artwork. The generated image is displayed inline in the chat automatically — refer to it as \"shown above\"; do NOT output an image URL or a markdown image.", parameters: { type: "object", properties: { prompt: { type: "string", description: "A detailed description of the image to create — subject, style, colours, composition." }, negative_prompt: { type: "string", description: "Things to avoid in the image (optional)." }, size: { type: "integer", description: "Square image size in pixels, e.g. 512, 768, 1024 (optional)." }, steps: { type: "integer", description: "Sampling steps; Turbo models want ~4 (optional)." }, seed: { type: "integer", description: "Seed for reproducibility (optional)." } }, required: ["prompt"] } } },
 ];
 
 // Built-in tools a chat gets when NO profile is active: read-only / no-side-effect only. Mutating
@@ -986,7 +987,7 @@ export function McpAppFrame({ ui, toolName, onSend }: { ui: ToolUi; toolName: st
             post({ jsonrpc: "2.0", id, result: {
               protocolVersion: "2026-01-26",
               hostCapabilities: {},
-              hostInfo: { name: "LexiChat", version: "2.3.3" },
+              hostInfo: { name: "LexiChat", version: "2.4.0" },
               hostContext: {
                 toolInfo: {
                   id: "1",
@@ -1526,6 +1527,12 @@ export default function App() {
     invoke("set_code_exec_unlocked", { unlocked: settings.alwaysAllowCodeExec === true }).catch(() => {});
   }, [settings.alwaysAllowCodeExec]);
 
+  // Seed the Rust image-generation config (sd.cpp binary/model paths + defaults) from settings, so
+  // the generate_image tool can find them. Fires at startup and whenever the config changes.
+  useEffect(() => {
+    invoke("set_image_gen_config", { args: settings.imageGen ?? {} }).catch(() => {});
+  }, [settings.imageGen]);
+
   // ── Chat history ──────────────────────────────────────────────────────────
   // Reload the per-profile conversation list. Re-runs on profile switch since it
   // depends on activeProfileId.
@@ -1969,6 +1976,9 @@ export default function App() {
     // capability that defaults off. Once the master is on it behaves like any other
     // tool: enabled unless a profile explicitly opts out.
     const runPythonMaster = settings.enabledTools.run_python === true;
+    // generate_image is likewise gated by a GLOBAL master switch (it needs a local sd.cpp binary +
+    // model configured), defaulting off. Once on, it behaves like any other tool per profile.
+    const imageGenMaster = settings.enabledTools.generate_image === true;
     const enabledTools = ALL_BUILTIN_TOOLS.filter(t => {
       const name = t.function.name;
       if (!activeProfile) {
@@ -1976,9 +1986,11 @@ export default function App() {
         // when its global master switch is explicitly on (an opt-in security capability, still
         // gated by the per-run permission prompt) — so code execution doesn't need a profile.
         if (name === "run_python") return runPythonMaster;
+        if (name === "generate_image") return imageGenMaster;
         return SAFE_DEFAULT_BUILTINS.has(name) && settings.enabledTools[name] !== false;
       }
       if (name === "run_python") return runPythonMaster && effectiveEnabledTools.run_python !== false;
+      if (name === "generate_image") return imageGenMaster && effectiveEnabledTools.generate_image !== false;
       return effectiveEnabledTools[name] !== false;
     });
     // Wiki memory: the active profile can override the global default; an unset profile
@@ -2078,6 +2090,12 @@ export default function App() {
       // images are already shown inline. (The model kept appending mapbox/OSM image URLs.)
       const outputRulesSuffix = "\n\nOUTPUT RULES: NEVER write a markdown image or link pointing at a remote http(s):// image URL (a map, chart, tile, etc.) — remote images are blocked and will NOT display. Any map, chart, or image produced by a tool or by run_python is ALREADY shown inline in the chat; just refer to it as \"shown above\". Do not paste image/tile URLs into your answer.";
 
+      // When image generation is enabled, tell the model it CAN make images (so it uses the tool
+      // instead of refusing). enabledTools is the already-filtered per-profile list.
+      const imageRulesSuffix = enabledTools.some(t => t.function.name === "generate_image")
+        ? "\n\nIMAGE GENERATION: you CAN create images. When the user asks you to create, draw, generate, illustrate, paint, or make an image, picture, logo, or artwork, call the generate_image tool with a detailed prompt. The result renders inline automatically — refer to it as \"shown above\". Never claim you are unable to generate or display images.\n\nPHOTOREALISTIC IMAGES: when the user wants a PHOTO or a realistic/photorealistic image of a person, place, object or scene, write a rich PHOTOGRAPHIC prompt — describe the subject in detail and add camera/lighting cues such as \"photograph, photorealistic, 85mm, natural lighting, detailed skin texture, sharp focus, high detail, realistic\" — AND pass a negative_prompt that excludes non-photographic styles, e.g. \"illustration, cartoon, drawing, painting, sketch, 3d render, cgi, anime, plastic, doll, deformed, extra fingers, low quality, blurry\". For a NON-photographic style the user asked for (cartoon, logo, watercolour, pixel art, etc.), prompt for THAT style explicitly and do NOT add the photographic terms."
+        : "";
+
       // The model has no clock — give it today's date so "latest/recent/this month" queries work
       // without needing a tool call, and warn that some data sources lag.
       const now = new Date();
@@ -2105,8 +2123,8 @@ export default function App() {
         : "";
 
       const systemPrompt = allowedDirs.length > 0
-        ? `${effectiveBase}${externalSuffix}${contextVarsSuffix}${wikiSuffix}${codeToolsSuffix}${figuresRulesSuffix}${mapRulesSuffix}${outputRulesSuffix}${dateSuffix}\nThe user's configured folders are: ${allowedDirs.join(", ")}. Rules for file operations:\n- When reading or listing files without a specified path, use these folders immediately — do not ask for clarification.\n- When writing or saving a file without a specified path, save it to ${allowedDirs[0]} with a sensible filename derived from the content (e.g. sikhism_article.pdf). Never call write_file without a full absolute path.\n- Always use full absolute paths — never '.' or '~'.`
-        : `${effectiveBase}${externalSuffix}${contextVarsSuffix}${wikiSuffix}${codeToolsSuffix}${figuresRulesSuffix}${mapRulesSuffix}${outputRulesSuffix}${dateSuffix}`;
+        ? `${effectiveBase}${externalSuffix}${contextVarsSuffix}${wikiSuffix}${codeToolsSuffix}${figuresRulesSuffix}${mapRulesSuffix}${outputRulesSuffix}${imageRulesSuffix}${dateSuffix}\nThe user's configured folders are: ${allowedDirs.join(", ")}. Rules for file operations:\n- When reading or listing files without a specified path, use these folders immediately — do not ask for clarification.\n- When writing or saving a file without a specified path, save it to ${allowedDirs[0]} with a sensible filename derived from the content (e.g. sikhism_article.pdf). Never call write_file without a full absolute path.\n- Always use full absolute paths — never '.' or '~'.`
+        : `${effectiveBase}${externalSuffix}${contextVarsSuffix}${wikiSuffix}${codeToolsSuffix}${figuresRulesSuffix}${mapRulesSuffix}${outputRulesSuffix}${imageRulesSuffix}${dateSuffix}`;
 
       // MCP servers this profile may use. With no active profile, none are enabled (conservative
       // default) — a profile must opt in. The backend filters strictly by this list.
@@ -2541,7 +2559,7 @@ export default function App() {
               Runs entirely on-device via Ollama. Reads files, searches the web,
               calls APIs, and keeps your data private.
             </p>
-            <div className="about-version">Version 2.3.3</div>
+            <div className="about-version">Version 2.4.0</div>
 
             <div className="about-support">
               <div className="about-support-label">Support the project</div>

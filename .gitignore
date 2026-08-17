@@ -49,3 +49,7 @@ temp/
 
 # Pyodide runtime assets (copied from node_modules by scripts/prepare-pyodide.mjs)
 public/pyodide/
+
+# Bundled image-gen engine (fetched per-platform by scripts/fetch-sd.mjs at build time)
+src-tauri/resources/image-gen/
+src-tauri/binaries/

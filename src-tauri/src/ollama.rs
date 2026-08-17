@@ -2014,6 +2014,38 @@ async fn dispatch_tool<R: tauri::Runtime>(
             paste the HTML into your reply.]");
     }
 
+    // 0c. Local image generation — shell out to stable-diffusion.cpp (offline, no cloud). The PNG
+    // is pushed as a data: URL onto pending_tool_images so the agent loop renders it inline, exactly
+    // like a Mapbox static map. Skipped-display in silent (job) runs, which have no UI.
+    if name == "generate_image" {
+        use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+        let prompt = args.get("prompt").and_then(|p| p.as_str()).unwrap_or("").trim().to_string();
+        if prompt.is_empty() {
+            return "Error: generate_image needs a non-empty 'prompt' describing the image.".to_string();
+        }
+        let negative = args.get("negative_prompt").and_then(|p| p.as_str());
+        let size = args.get("size").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let steps = args.get("steps").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let seed = args.get("seed").and_then(|v| v.as_i64());
+        let cfg = app.try_state::<crate::AppState>()
+            .map(|s| s.image_gen_config.lock().unwrap().clone())
+            .unwrap_or_default();
+        return match crate::image_gen::generate(&cfg, &prompt, negative, size, steps, seed).await {
+            Ok(png) => {
+                if !silent {
+                    if let Some(s) = app.try_state::<crate::AppState>() {
+                        let b64 = B64.encode(&png);
+                        s.pending_tool_images.lock().unwrap().push(format!("data:image/png;base64,{b64}"));
+                    }
+                }
+                format!("[Generated an image for the prompt \"{prompt}\". It is displayed inline to \
+                    the user above. Refer to it naturally as \"shown above\"; do NOT output an image \
+                    URL or markdown image, and do NOT claim you cannot show images.]")
+            }
+            Err(e) => format!("Image generation error: {e}"),
+        };
+    }
+
     // 1. Try built-in tools first
     let builtin_names = ["read_file","write_file","list_files","search_files",
         "search_in_files","get_file_info","list_directory_tree","create_directory",

@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Image Generation — LexiChat Docs</title>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-NHGZKJ6KE1"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-NHGZKJ6KE1');
+</script>
+<meta name="description" content="Generate images offline in LexiChat with a local Stable Diffusion engine — model picker, photorealistic output, and every setting explained."/>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/>
+<script>
+tailwind.config = {
+  darkMode: 'class',
+  theme: {
+    extend: {
+      fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui'] },
+      colors: { accent: '#6366f1', 'accent-light': '#818cf8', 'accent-dark': '#4f46e5' }
+    }
+  }
+}
+</script>
+<style>
+  body { font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; }
+  .gradient-text { background: linear-gradient(135deg, #6366f1 0%, #a78bfa 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+  .glass { background: rgba(255,255,255,0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+  .prose-code { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; }
+  pre { background: #0f172a; border-radius: 0.75rem; padding: 1.25rem; overflow-x: auto; }
+  pre code { color: #94a3b8; font-size: 0.8125rem; line-height: 1.6; font-family: 'SF Mono', 'Fira Code', monospace; }
+  .kw { color: #818cf8; }
+  .str { color: #34d399; }
+  .num { color: #fb923c; }
+  .cm { color: #475569; }
+  code.inline { font-family: 'SF Mono', monospace; font-size: 0.85em; background: #eef0f4; color: #4f46e5; padding: 0.1rem 0.4rem; border-radius: 0.35rem; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-900 antialiased">
+
+<!-- ── Nav ─────────────────────────────────────────────────────────────────── -->
+<nav class="fixed top-0 w-full z-50 glass border-b border-slate-200/60">
+  <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+    <a href="../index.html" class="flex items-center gap-2.5">
+      <img src="../resources/lexi1.png" alt="LexiChat" class="w-8 h-8 rounded-xl"/>
+      <span class="font-bold text-lg tracking-tight">LexiChat</span>
+    </a>
+    <div class="hidden md:flex items-center gap-8">
+      <a href="index.html" class="text-sm font-medium text-slate-600 hover:text-accent transition-colors">← All Docs</a>
+      <a href="getting-started.html" class="text-sm font-medium text-slate-600 hover:text-accent transition-colors">Getting Started</a>
+      <a href="features.html" class="text-sm font-medium text-slate-600 hover:text-accent transition-colors">Features</a>
+      <a href="tools.html" class="text-sm font-medium text-slate-600 hover:text-accent transition-colors">Tools</a>
+      <a href="integrations.html" class="text-sm font-medium text-slate-600 hover:text-accent transition-colors">Integrations</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ── Layout ───────────────────────────────────────────────────────────────── -->
+<div class="max-w-5xl mx-auto px-6 pt-28 pb-24 flex gap-12">
+
+  <!-- Sidebar -->
+  <aside class="hidden lg:block w-56 flex-shrink-0">
+    <div class="sticky top-24 space-y-1">
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Image Generation</div>
+      <a href="#overview" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Overview</a>
+      <a href="#example" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Example</a>
+      <a href="#setup" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Setup</a>
+      <a href="#models" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Choosing a model</a>
+      <a href="#photorealism" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Photorealism</a>
+      <a href="#parameters" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Advanced settings</a>
+      <a href="#platforms" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Platform support</a>
+      <a href="#privacy" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Privacy</a>
+    </div>
+  </aside>
+
+  <!-- Content -->
+  <article class="flex-1 min-w-0">
+    <div class="mb-4">
+      <a href="index.html" class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-accent transition-colors">
+        <span class="material-symbols-outlined text-base">arrow_back</span> Docs
+      </a>
+    </div>
+
+    <h1 class="text-3xl md:text-4xl font-bold tracking-tight mb-3">Image Generation</h1>
+    <p class="text-lg text-slate-600 mb-10">Create images from a text description — entirely on your own machine. No account, no cloud, no per-image cost. Just ask the assistant to draw or photograph something and it appears in the chat.</p>
+
+    <!-- Overview -->
+    <section id="overview" class="mb-14">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">info</span> How it works
+      </h2>
+      <p class="text-slate-600 mb-4">LexiChat bundles a small, offline image engine (<a href="https://github.com/leejet/stable-diffusion.cpp" class="text-accent hover:underline">stable-diffusion.cpp</a>) and gives the AI a <code class="inline">generate_image</code> tool. When you ask for a picture, the model writes a detailed prompt, the engine renders it locally, and the result is shown inline in the chat — with a Save button.</p>
+      <div class="bg-white border border-slate-200 rounded-xl p-5">
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">The flow</div>
+        <div class="flex flex-wrap items-center gap-2 text-sm">
+          <div class="bg-slate-100 rounded-lg px-3 py-1.5 font-medium">"Draw me a…"</div>
+          <span class="text-slate-400">→</span>
+          <div class="bg-accent/10 text-accent rounded-lg px-3 py-1.5 font-medium">generate_image</div>
+          <span class="text-slate-400">→</span>
+          <div class="bg-slate-100 rounded-lg px-3 py-1.5 font-medium">local render</div>
+          <span class="text-slate-400">→</span>
+          <div class="bg-slate-100 rounded-lg px-3 py-1.5 font-medium">image in chat</div>
+        </div>
+        <p class="text-xs text-slate-400 mt-3">Everything after your message happens on your computer. Nothing is uploaded.</p>
+      </div>
+    </section>
+
+    <!-- Example -->
+    <section id="example" class="mb-14">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">image</span> Example
+      </h2>
+      <p class="text-slate-600 mb-5">This photorealistic image was generated locally from a single chat message, using the <b>RealVisXL</b> model at 1024&times;1024:</p>
+      <figure class="mb-4">
+        <img src="../resources/generate_image-1.png" alt="Photorealistic image of an elderly ceramicist in a sunlit studio holding a clay bowl" class="rounded-2xl border border-slate-200 shadow-lg w-full max-w-xl mx-auto block"/>
+      </figure>
+      <div class="bg-white border border-slate-200 rounded-xl p-5">
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">The prompt</div>
+        <p class="text-slate-600 text-sm italic">"Generate a photorealistic image of an elderly ceramicist in her sunlit studio, holding a freshly thrown clay bowl. Linen apron over a grey sweater, wisps of grey hair, warm morning light from a window, shelves of pottery behind her slightly out of focus. Shallow depth of field, 85mm lens."</p>
+      </div>
+      <p class="text-slate-500 text-sm mt-3">You don't have to write it that carefully yourself — LexiChat automatically expands a plain request like <span class="italic">"a photo of a potter in her studio"</span> into a detailed photographic prompt (see <a href="#photorealism" class="text-accent hover:underline">Photorealism</a>).</p>
+    </section>
+
+    <!-- Setup -->
+    <section id="setup" class="mb-14">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">rocket_launch</span> Setup — two steps
+      </h2>
+      <ol class="space-y-4">
+        <li class="bg-white border border-slate-200 rounded-xl p-5 flex gap-4">
+          <div class="w-8 h-8 rounded-full bg-accent/10 text-accent font-semibold flex items-center justify-center flex-shrink-0">1</div>
+          <div>
+            <div class="font-medium mb-1">Turn it on</div>
+            <p class="text-slate-600 text-sm">Open <b>Admin → Tools</b> and enable <b>Generate Images (offline)</b>. It's off by default. A new <b>🎨 Images</b> tab appears.</p>
+          </div>
+        </li>
+        <li class="bg-white border border-slate-200 rounded-xl p-5 flex gap-4">
+          <div class="w-8 h-8 rounded-full bg-accent/10 text-accent font-semibold flex items-center justify-center flex-shrink-0">2</div>
+          <div>
+            <div class="font-medium mb-1">Pick &amp; download a model</div>
+            <p class="text-slate-600 text-sm">On the <b>🎨 Images</b> tab, choose a model from the dropdown and click <b>Download &amp; use</b>. The image engine itself is already built in — you only need a model. The download is a few gigabytes and happens once; the correct quality settings are applied for you.</p>
+          </div>
+        </li>
+      </ol>
+      <div class="mt-5 bg-emerald-50 border border-emerald-200 rounded-xl p-4 flex gap-3">
+        <span class="material-symbols-outlined text-emerald-600">verified_user</span>
+        <p class="text-sm text-emerald-800">The engine ships inside LexiChat and installs itself on first launch — there's nothing separate to install. You just download a model.</p>
+      </div>
+    </section>
+
+    <!-- Models -->
+    <section id="models" class="mb-14">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">tune</span> Choosing a model
+      </h2>
+      <p class="text-slate-600 mb-5">The picker offers a few curated models. Bigger models look better but use more disk and take longer per image. Pick based on what you're making:</p>
+      <div class="overflow-x-auto rounded-xl border border-slate-200">
+        <table class="w-full text-sm min-w-[640px]">
+          <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
+            <tr>
+              <th class="text-left font-semibold px-4 py-3">Model</th>
+              <th class="text-left font-semibold px-4 py-3">Best for</th>
+              <th class="text-left font-semibold px-4 py-3">Speed</th>
+              <th class="text-left font-semibold px-4 py-3">Size</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100">
+            <tr>
+              <td class="px-4 py-3 font-medium">SDXL-Turbo</td>
+              <td class="px-4 py-3 text-slate-600">Fast, good all-round images &amp; illustrations</td>
+              <td class="px-4 py-3 text-emerald-600 font-medium">~18s</td>
+              <td class="px-4 py-3 text-slate-500">6.9 GB</td>
+            </tr>
+            <tr class="bg-accent/[0.03]">
+              <td class="px-4 py-3 font-medium">RealVisXL <span class="text-accent">★</span></td>
+              <td class="px-4 py-3 text-slate-600">Photorealistic photos &amp; people</td>
+              <td class="px-4 py-3 text-amber-600 font-medium">~90s</td>
+              <td class="px-4 py-3 text-slate-500">6.9 GB</td>
+            </tr>
+            <tr>
+              <td class="px-4 py-3 font-medium">Stable Diffusion 1.5</td>
+              <td class="px-4 py-3 text-slate-600">Lower-end machines; smaller &amp; quickest</td>
+              <td class="px-4 py-3 text-emerald-600 font-medium">fast</td>
+              <td class="px-4 py-3 text-slate-500">4.3 GB</td>
+            </tr>
+            <tr>
+              <td class="px-4 py-3 font-medium">SDXL 1.0 (base)</td>
+              <td class="px-4 py-3 text-slate-600">General high quality</td>
+              <td class="px-4 py-3 text-amber-600 font-medium">slower</td>
+              <td class="px-4 py-3 text-slate-500">6.9 GB</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="text-slate-500 text-sm mt-4"><b>Custom URL.</b> The dropdown also has a <b>Custom URL…</b> option — paste a direct link to any compatible <code class="inline">.safetensors</code> or <code class="inline">.gguf</code> model (SD 1.x/2.x, SDXL, SD 3.5). You can keep several models downloaded and switch between them at any time.</p>
+      <div class="mt-4 bg-amber-50 border border-amber-200 rounded-xl p-4 flex gap-3">
+        <span class="material-symbols-outlined text-amber-600">bolt</span>
+        <p class="text-sm text-amber-800"><b>Turbo vs. quality.</b> Turbo models are distilled for speed (4 steps) and are great for quick, casual images — but they are <em>not</em> the right choice for photorealism. For real photos use RealVisXL (or SDXL base), which run more steps and look far more convincing.</p>
+      </div>
+    </section>
+
+    <!-- Photorealism -->
+    <section id="photorealism" class="mb-14">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">photo_camera</span> Photorealism &amp; prompting
+      </h2>
+      <p class="text-slate-600 mb-4">When you ask for a <b>photo</b> or a <b>realistic</b> image, LexiChat automatically writes a proper photographic prompt for you — adding camera and lighting cues and a <b>negative prompt</b> that steers the model away from cartoon/CGI looks. So a plain request works well:</p>
+      <div class="grid md:grid-cols-2 gap-4 mb-4">
+        <div class="bg-white border border-slate-200 rounded-xl p-5">
+          <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">You type</div>
+          <p class="text-slate-600 text-sm italic">"Take a photo of a red fox in fresh snow"</p>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-xl p-5">
+          <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">LexiChat sends</div>
+          <p class="text-slate-600 text-sm italic">"photograph, photorealistic, a red fox in fresh snow, detailed fur, soft winter light, 85mm, sharp focus…" <span class="not-italic text-slate-400">+ negative:</span> "illustration, cartoon, 3d render, cgi, deformed…"</p>
+        </div>
+      </div>
+      <p class="text-slate-600 mb-4">It's smart about intent: ask for a <span class="italic">cartoon</span>, <span class="italic">logo</span> or <span class="italic">watercolour</span> and it deliberately <em>drops</em> the photographic terms so those styles come out clean.</p>
+      <div class="bg-white border border-slate-200 rounded-xl p-5">
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Tips for better results</div>
+        <ul class="space-y-2 text-sm text-slate-600">
+          <li class="flex gap-2"><span class="material-symbols-outlined text-sm text-accent mt-0.5">check</span> Be specific about subject, setting, and lighting — "golden hour", "soft window light", "studio lighting".</li>
+          <li class="flex gap-2"><span class="material-symbols-outlined text-sm text-accent mt-0.5">check</span> Name a lens/framing for photos — "85mm portrait", "wide shot", "shallow depth of field".</li>
+          <li class="flex gap-2"><span class="material-symbols-outlined text-sm text-accent mt-0.5">check</span> Ask for a specific style when you want one — "watercolour", "pixel art", "flat vector logo".</li>
+          <li class="flex gap-2"><span class="material-symbols-outlined text-sm text-accent mt-0.5">check</span> Hands and text are still hard for all local models — expect the occasional imperfection.</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Advanced parameters -->
+    <section id="parameters" class="mb-14">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">settings</span> Advanced settings, explained
+      </h2>
+      <p class="text-slate-600 mb-5">Selecting a model sets sensible defaults for these automatically, so you normally never touch them. They live under <b>▸ Advanced settings</b> on the Images tab for when you want manual control.</p>
+
+      <div class="space-y-4">
+        <div class="bg-white border border-slate-200 rounded-xl p-5">
+          <div class="font-medium mb-1 flex items-center gap-2"><span class="material-symbols-outlined text-accent text-lg">stairs</span> Steps</div>
+          <p class="text-slate-600 text-sm">How many refinement passes the engine makes. <b>More steps = more detail and coherence, but slower.</b> Turbo models are tuned for ~4 steps; standard models want ~20–30. Beyond ~40 you rarely see improvement.</p>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-xl p-5">
+          <div class="font-medium mb-1 flex items-center gap-2"><span class="material-symbols-outlined text-accent text-lg">aspect_ratio</span> Size (px)</div>
+          <p class="text-slate-600 text-sm">Output resolution (square). <b>Match it to the model's native size:</b> SDXL-family models (SDXL-Turbo, RealVisXL, SDXL base) look best at <b>1024</b>; SD 1.5 at <b>512</b>. Larger sizes add detail but use more memory and time — and going far below native size hurts quality.</p>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-xl p-5">
+          <div class="font-medium mb-1 flex items-center gap-2"><span class="material-symbols-outlined text-accent text-lg">tune</span> CFG scale (guidance)</div>
+          <p class="text-slate-600 text-sm">How strictly the image follows your prompt. <b>Low (≈1)</b> is required for Turbo models; <b>mid (≈4–7)</b> suits standard models. Too high looks over-saturated and "fried"; too low ignores the prompt. Leave it on the preset value unless you're experimenting.</p>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-xl p-5">
+          <div class="font-medium mb-1 flex items-center gap-2"><span class="material-symbols-outlined text-accent text-lg">block</span> Negative prompt</div>
+          <p class="text-slate-600 text-sm">A description of what to <em>avoid</em> (e.g. "blurry, extra fingers, cartoon"). LexiChat fills this in automatically for photo requests; the AI can also set it per image based on what you ask for.</p>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-xl p-5">
+          <div class="font-medium mb-1 flex items-center gap-2"><span class="material-symbols-outlined text-accent text-lg">casino</span> Seed</div>
+          <p class="text-slate-600 text-sm">A number that fixes the random starting point. The same prompt + seed gives the same image — useful for reproducing or tweaking a result. Left unset, every image is different. The AI can set this when you ask for a variation of a specific picture.</p>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-xl p-5">
+          <div class="font-medium mb-1 flex items-center gap-2"><span class="material-symbols-outlined text-accent text-lg">terminal</span> sd engine path &amp; Model path</div>
+          <p class="text-slate-600 text-sm">Overrides for power users. Normally both are <b>auto-detected</b> — the engine is the bundled one and the model is the one you downloaded. Set <b>Model path</b> to point at a specific file you manage yourself, or <b>sd engine path</b> to use your own build of stable-diffusion.cpp.</p>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-xl p-5">
+          <div class="font-medium mb-1 flex items-center gap-2"><span class="material-symbols-outlined text-accent text-lg">code</span> Extra sd args</div>
+          <p class="text-slate-600 text-sm">Raw command-line flags passed straight to the engine, for advanced setups — e.g. a separate VAE (<code class="inline">--vae</code>), a specific sampler (<code class="inline">--sampling-method</code>), or text encoders for multi-file models. Most people never need this.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Platforms -->
+    <section id="platforms" class="mb-14">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">devices</span> Platform support
+      </h2>
+      <p class="text-slate-600 mb-4">The image engine is bundled and GPU-accelerated where a prebuilt is available. Generation speed depends heavily on your hardware.</p>
+      <div class="overflow-x-auto rounded-xl border border-slate-200">
+        <table class="w-full text-sm min-w-[520px]">
+          <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
+            <tr><th class="text-left font-semibold px-4 py-3">Platform</th><th class="text-left font-semibold px-4 py-3">Engine</th><th class="text-left font-semibold px-4 py-3">Acceleration</th></tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100">
+            <tr><td class="px-4 py-3 font-medium">macOS (Apple Silicon)</td><td class="px-4 py-3 text-emerald-600">Bundled</td><td class="px-4 py-3 text-slate-600">Metal</td></tr>
+            <tr><td class="px-4 py-3 font-medium">Windows (x64)</td><td class="px-4 py-3 text-emerald-600">Bundled</td><td class="px-4 py-3 text-slate-600">Vulkan</td></tr>
+            <tr><td class="px-4 py-3 font-medium">Linux (x64)</td><td class="px-4 py-3 text-emerald-600">Bundled</td><td class="px-4 py-3 text-slate-600">Vulkan</td></tr>
+            <tr><td class="px-4 py-3 font-medium">Intel Mac / Linux ARM</td><td class="px-4 py-3 text-slate-400">Not bundled</td><td class="px-4 py-3 text-slate-500">—</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="text-slate-500 text-sm mt-3">Where no prebuilt engine exists, image generation is simply unavailable and the assistant will say so — everything else in LexiChat works as normal.</p>
+    </section>
+
+    <!-- Privacy -->
+    <section id="privacy" class="mb-4">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">lock</span> Privacy
+      </h2>
+      <div class="bg-white border border-slate-200 rounded-xl p-6">
+        <p class="text-slate-600 mb-3">Image generation is <b>100% local</b>. Your prompts and the images never leave your computer — there is no image API, no account, and no telemetry. The only network access is the <b>one-time model download</b> when you first set it up.</p>
+        <p class="text-slate-500 text-sm">This is the same privacy stance as the rest of LexiChat: the models run on your machine, and your data stays there.</p>
+      </div>
+    </section>
+
+    <!-- Footer nav -->
+    <div class="mt-16 pt-8 border-t border-slate-200 flex items-center justify-between">
+      <a href="tools.html" class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-accent transition-colors"><span class="material-symbols-outlined text-base">arrow_back</span> Built-in Tools</a>
+      <a href="index.html" class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-accent transition-colors">All Docs <span class="material-symbols-outlined text-base">arrow_forward</span></a>
+    </div>
+  </article>
+</div>
+
+</body>
+</html>

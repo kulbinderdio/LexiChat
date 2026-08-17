@@ -9,6 +9,7 @@ mod job_designer;
 mod history;
 mod wiki;
 mod skills;
+mod image_gen;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -59,6 +60,11 @@ pub struct AppState {
     /// Model-authored HTML artifact (from `create_artifact`) stashed by dispatch for the agent
     /// loop to attach to the next tool-result event (rendered inline in a sandboxed iframe).
     pub pending_artifact: Mutex<Option<ollama::ArtifactPayload>>,
+    /// Local image-generation settings (sd.cpp binary + model paths + defaults), pushed from the
+    /// frontend. Read by dispatch when the model calls `generate_image`.
+    pub image_gen_config: Mutex<image_gen::ImageGenConfig>,
+    /// Set true to cancel an in-flight model download.
+    pub image_model_download_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// MCP server ids the user has approved to render/interact with apps this
     /// session (set by `approve_mcp_app`; reset on restart).
     pub apps_allowed: Mutex<std::collections::HashSet<String>>,
@@ -115,6 +121,8 @@ impl Default for AppState {
             pending_tool_ui: Mutex::new(None),
             pending_tool_images: Mutex::new(Vec::new()),
             pending_artifact: Mutex::new(None),
+            image_gen_config: Mutex::new(image_gen::ImageGenConfig::default()),
+            image_model_download_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             apps_allowed: Mutex::new(std::collections::HashSet::new()),
             pending_app_approval: Mutex::new(None),
             active_conversation_id: Mutex::new(None),
@@ -598,6 +606,65 @@ fn respond_code_permission(approved: bool, state: State<'_, AppState>) -> Result
 /// when the persisted "Always allow code execution" setting is on, so approved users skip the
 /// per-session approval dialog. Persistence lives in the frontend settings (localStorage); this
 /// just seeds the in-memory session flag the run_python gate reads.
+/// Push the image-generation settings (sd.cpp binary + model paths + defaults) into AppState. The
+/// frontend calls this at startup and whenever the user edits them, mirroring set_mcp_servers etc.
+#[tauri::command]
+fn set_image_gen_config(args: image_gen::ImageGenConfig, state: State<'_, AppState>) -> Result<(), String> {
+    *state.image_gen_config.lock().unwrap() = args;
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+struct DownloadModelArgs {
+    url: String,
+    #[serde(default)]
+    filename: Option<String>,
+}
+
+/// Stream-download an image model into the app's image-gen/models dir, emitting progress on the
+/// `image-model-download` event so the UI can show a bar. Auto-detection then picks it up. The
+/// AppHandle (not a borrowed State, which can't cross an await) is used so the long download is
+/// safe to hold across await points.
+#[tauri::command]
+async fn download_image_model(args: DownloadModelArgs, app: AppHandle) -> Result<String, String> {
+    use std::sync::atomic::Ordering;
+    use tauri::Emitter as _;
+    // Grab the cancel flag (a cloned Arc) without holding the State guard across the await.
+    let cancel = {
+        let state = app.state::<AppState>();
+        state.image_model_download_cancel.store(false, Ordering::SeqCst);
+        state.image_model_download_cancel.clone()
+    };
+    let app2 = app.clone();
+    let mut last: u64 = 0;
+    let result = image_gen::download_model(&args.url, args.filename.as_deref(), &cancel, |recv, total| {
+        // Throttle progress events: at start, every ~8 MB, and at the end.
+        if recv == 0 || recv.saturating_sub(last) >= 8_000_000 || Some(recv) == total {
+            last = recv;
+            let _ = app2.emit("image-model-download", serde_json::json!({
+                "received": recv, "total": total, "done": false
+            }));
+        }
+    }).await;
+    match result {
+        Ok(p) => {
+            let path = p.display().to_string();
+            let _ = app.emit("image-model-download", serde_json::json!({ "done": true, "path": path }));
+            Ok(path)
+        }
+        Err(e) => {
+            let _ = app.emit("image-model-download", serde_json::json!({ "done": true, "error": e }));
+            Err(e)
+        }
+    }
+}
+
+/// Cancel an in-flight model download (the streaming loop checks this each chunk).
+#[tauri::command]
+fn cancel_image_model_download(state: State<'_, AppState>) {
+    state.image_model_download_cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 #[tauri::command]
 fn set_code_exec_unlocked(unlocked: bool, state: State<'_, AppState>) -> Result<(), String> {
     *state.code_exec_unlocked.lock().unwrap() = unlocked;
@@ -2070,6 +2137,13 @@ pub fn run() {
             jobs::spawn_scheduler(app.handle().clone());
             setup_tray(app)?;
 
+            // First-launch: install the bundled offline image-gen engine (sd + lib) from resources
+            // into the writable app-data dir so generate_image works with no setup. No-op if this
+            // platform ships none, or the user already has one.
+            if let Ok(res) = app.path().resource_dir() {
+                image_gen::provision_from_resources(&res);
+            }
+
             // Hide window on close instead of quitting — keeps scheduler alive
             if let Some(window) = app.get_webview_window("main") {
                 let w = window.clone();
@@ -2120,6 +2194,9 @@ pub fn run() {
             set_allowed_dirs,
             respond_code_permission,
             set_code_exec_unlocked,
+            set_image_gen_config,
+            download_image_model,
+            cancel_image_model_download,
             get_skills,
             save_skill,
             delete_skill,

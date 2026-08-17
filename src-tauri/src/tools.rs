@@ -1717,6 +1717,13 @@ pub fn all_builtin_schemas() -> Vec<serde_json::Value> {
                  ("body","string","Plain text email body."),
                  ("reply_to_message_id","string","Message-ID to reply to, for threading (optional).")],
             vec!["to","subject","body"]),
+        schema("generate_image", "Generate an image from a text description using the local, offline image model. Use this whenever the user asks you to create, draw, generate, illustrate, paint, or make an image, picture, logo, or artwork. The generated image is displayed inline in the chat automatically — refer to it as \"shown above\"; do NOT output an image URL or markdown image.",
+            vec![("prompt","string","A detailed description of the image to create. Be specific about subject, style, colours, and composition."),
+                 ("negative_prompt","string","Things to avoid in the image (optional)."),
+                 ("size","integer","Square image size in pixels, e.g. 512, 768, or 1024 (optional)."),
+                 ("steps","integer","Sampling steps — more is slower but can be higher quality; Turbo models want ~4 (optional)."),
+                 ("seed","integer","Seed for reproducibility (optional).")],
+            vec!["prompt"]),
     ]
 }
 
@@ -2045,7 +2052,7 @@ mod tests {
     #[test]
     fn all_builtin_schemas_returns_expected_count() {
         let schemas = all_builtin_schemas();
-        assert_eq!(schemas.len(), 15);
+        assert_eq!(schemas.len(), 16);
     }
 
     #[test]

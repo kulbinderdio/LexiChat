@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { buildExportEnvelope, parseImport, mergeImport, type SkillBundle } from "./profileIO";
 import { ChatParams, DEFAULT_CHAT_PARAMS, ChatParamsDefaults, AdvancedParamsContent } from "./ChatParamsPanel";
@@ -192,9 +193,184 @@ export interface AppSettings {
   // When true, run_python skips the per-session approval prompt (persisted here; seeded into the
   // Rust session flag at startup via set_code_exec_unlocked).
   alwaysAllowCodeExec?: boolean;
+  // Local offline image generation (stable-diffusion.cpp). Pushed to the Rust backend via
+  // set_image_gen_config. Field names are snake_case to match the Rust struct 1:1.
+  imageGen?: ImageGenConfig;
   // Legacy fields kept for migration only — will be undefined after first load
   mcpServers?: StoredMCPServer[];
   openapiSpecs?: StoredOpenAPISpec[];
+}
+
+// Mirrors the Rust `image_gen::ImageGenConfig` (snake_case for direct IPC pass-through).
+export interface ImageGenConfig {
+  binary_path?: string;
+  model_path?: string;
+  steps?: number;
+  size?: number;
+  cfg_scale?: number;
+  extra_args?: string;
+}
+
+// Curated, verified single-file models the user picks from (no URL hunting). Each carries its
+// recommended generation params so selecting one "just works". All are ungated direct downloads.
+interface ModelPreset {
+  id: string; name: string; blurb: string; sizeMb: number;
+  url: string; filename: string; steps: number; size: number; cfg: number; licence: string;
+}
+const MODEL_PRESETS: ModelPreset[] = [
+  { id: "sdxl-turbo", name: "SDXL-Turbo", blurb: "Fast (4 steps), good all-round quality at 1024px", sizeMb: 6938,
+    url: "https://huggingface.co/stabilityai/sdxl-turbo/resolve/main/sd_xl_turbo_1.0_fp16.safetensors",
+    filename: "sdxl_turbo.safetensors", steps: 4, size: 1024, cfg: 1, licence: "Stability (non-commercial)" },
+  { id: "realvisxl", name: "RealVisXL 5.0 (photorealistic)", blurb: "Best for realistic photos & people · slower (~30 steps)", sizeMb: 6938,
+    url: "https://huggingface.co/SG161222/RealVisXL_V5.0/resolve/main/RealVisXL_V5.0_fp16.safetensors",
+    filename: "realvisxl.safetensors", steps: 30, size: 1024, cfg: 5, licence: "OpenRAIL++-M" },
+  { id: "sd15", name: "Stable Diffusion 1.5", blurb: "Smallest & quickest · classic look, less detail", sizeMb: 4265,
+    url: "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors",
+    filename: "sd15.safetensors", steps: 20, size: 512, cfg: 7, licence: "OpenRAIL-M" },
+  { id: "sdxl-base", name: "SDXL 1.0 (base)", blurb: "Best quality · slower (~30 steps)", sizeMb: 6938,
+    url: "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors",
+    filename: "sdxl_base.safetensors", steps: 30, size: 1024, cfg: 7, licence: "OpenRAIL++-M" },
+];
+
+// Dedicated Images tab: a friendly model picker up front; the technical knobs live under Advanced.
+// Only shown when the generate_image master switch is on (see the Tools tab).
+function ImageGenTab({ settings, onChange }: { settings: AppSettings; onChange: (s: AppSettings) => void }) {
+  const ig: ImageGenConfig = settings.imageGen ?? {};
+  const setIg = (patch: Partial<ImageGenConfig>) => onChange({ ...settings, imageGen: { ...ig, ...patch } });
+  const [selId, setSelId] = useState<string>(MODEL_PRESETS[0].id);
+  const [customUrl, setCustomUrl] = useState("");
+  const [downloading, setDownloading] = useState(false);
+  const [pct, setPct] = useState<number | null>(null);
+  const [status, setStatus] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  useEffect(() => {
+    const un = listen<{ received?: number; total?: number; done?: boolean; error?: string }>(
+      "image-model-download", e => {
+        const p = e.payload;
+        if (p.done) return; // completion is handled by the awaited invoke below
+        if (p.total && p.received != null) setPct(Math.round((p.received / p.total) * 100));
+      });
+    return () => { un.then(f => f()); };
+  }, []);
+
+  const preset = MODEL_PRESETS.find(p => p.id === selId);
+  const isCustom = selId === "custom";
+  const activeModel = (ig.model_path ?? "").split(/[\\/]/).pop() || "none yet";
+
+  const download = async () => {
+    const url = (isCustom ? customUrl : preset?.url ?? "").trim();
+    if (!url) return;
+    setDownloading(true); setPct(0); setStatus("Starting…");
+    try {
+      const path = await invoke<string>("download_image_model",
+        { args: { url, filename: isCustom ? undefined : preset?.filename } });
+      // Point the app at exactly this model + apply the preset's recommended params.
+      if (preset && !isCustom) setIg({ model_path: path, steps: preset.steps, size: preset.size, cfg_scale: preset.cfg });
+      else setIg({ model_path: path });
+      setPct(100); setStatus("✓ Ready to use");
+    } catch (e) {
+      setStatus("✕ " + String(e));
+    }
+    setDownloading(false);
+  };
+  const cancel = () => { invoke("cancel_image_model_download").catch(() => {}); };
+
+  const inputStyle: React.CSSProperties = { width: "100%", padding: "6px 8px", fontSize: 12, fontFamily: "monospace", boxSizing: "border-box" };
+  const lbl: React.CSSProperties = { fontSize: 11, opacity: 0.75, marginBottom: 3, display: "block" };
+  const btn: React.CSSProperties = { padding: "7px 14px", fontSize: 13, cursor: "pointer", whiteSpace: "nowrap" };
+
+  return (
+    <div className="admin-scroll">
+      <section className="admin-section">
+        <div className="admin-section-header">
+          <span className="admin-section-icon">🎨</span>
+          <span className="admin-section-title">IMAGE GENERATION</span>
+        </div>
+        <div style={{ padding: "12px 14px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
+          <span className="admin-row-sub">
+            Pick a model and download it — everything runs offline on your machine, no account or cloud. Bigger models look better but use more disk and take longer.
+          </span>
+
+          <div>
+            <label style={lbl}>Model</label>
+            <select value={selId} onChange={e => setSelId(e.target.value)} disabled={downloading}
+              style={{ ...inputStyle, fontFamily: "inherit" }}>
+              {MODEL_PRESETS.map(p => <option key={p.id} value={p.id}>{p.name} — {(p.sizeMb / 1000).toFixed(1)} GB</option>)}
+              <option value="custom">Custom URL…</option>
+            </select>
+            {preset && !isCustom && (
+              <span className="admin-row-sub" style={{ display: "block", marginTop: 4 }}>{preset.blurb} · licence: {preset.licence}</span>
+            )}
+          </div>
+
+          {isCustom && (
+            <div>
+              <label style={lbl}>Model URL (.safetensors / .gguf)</label>
+              <input type="text" value={customUrl} onChange={e => setCustomUrl(e.target.value)} disabled={downloading}
+                placeholder="https://…/model.safetensors" style={inputStyle} />
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            {downloading
+              ? <button onClick={cancel} style={btn}>Cancel</button>
+              : <button onClick={download} style={{ ...btn, fontWeight: 600 }}>Download &amp; use</button>}
+            <span className="admin-row-sub" style={{ fontSize: 11 }}>
+              {downloading ? `${pct ?? 0}% — large download, please wait` : `Active model: ${activeModel}`}
+            </span>
+          </div>
+          {downloading && (
+            <div style={{ height: 6, background: "rgba(128,128,128,0.25)", borderRadius: 3, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${pct ?? 10}%`, background: "var(--accent, #5b4bd6)", transition: "width 0.2s" }} />
+            </div>
+          )}
+          {status && !downloading && <span className="admin-row-sub" style={{ fontSize: 11 }}>{status}</span>}
+
+          <button onClick={() => setShowAdvanced(v => !v)}
+            style={{ background: "none", border: "none", padding: "2px 0", textAlign: "left", opacity: 0.7, fontSize: 12, cursor: "pointer" }}>
+            {showAdvanced ? "▾" : "▸"} Advanced settings
+          </button>
+          {showAdvanced && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingLeft: 8, borderLeft: "2px solid rgba(128,128,128,0.2)" }}>
+              <div>
+                <label style={lbl}>sd engine path</label>
+                <input type="text" value={ig.binary_path ?? ""} placeholder="auto-detect (bundled engine)"
+                  onChange={e => setIg({ binary_path: e.target.value })} style={inputStyle} />
+              </div>
+              <div>
+                <label style={lbl}>Model path</label>
+                <input type="text" value={ig.model_path ?? ""} placeholder="auto-detect (image-gen/models folder)"
+                  onChange={e => setIg({ model_path: e.target.value })} style={inputStyle} />
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={lbl}>Steps</label>
+                  <input type="number" value={ig.steps ?? ""} placeholder="preset"
+                    onChange={e => setIg({ steps: e.target.value ? Number(e.target.value) : undefined })} style={inputStyle} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={lbl}>Size (px)</label>
+                  <input type="number" value={ig.size ?? ""} placeholder="preset"
+                    onChange={e => setIg({ size: e.target.value ? Number(e.target.value) : undefined })} style={inputStyle} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={lbl}>CFG scale</label>
+                  <input type="number" step="0.1" value={ig.cfg_scale ?? ""} placeholder="preset"
+                    onChange={e => setIg({ cfg_scale: e.target.value ? Number(e.target.value) : undefined })} style={inputStyle} />
+                </div>
+              </div>
+              <div>
+                <label style={lbl}>Extra sd args (optional)</label>
+                <input type="text" value={ig.extra_args ?? ""} placeholder="--vae path …"
+                  onChange={e => setIg({ extra_args: e.target.value })} style={inputStyle} />
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  );
 }
 
 interface SpecInfo {
@@ -238,7 +414,7 @@ interface Props {
   onClose: () => void;
 }
 
-type Tab = "profiles" | "tools" | "skills" | "models" | "openapi" | "sparql" | "mcp" | "sandbox" | "server" | "defaults";
+type Tab = "profiles" | "tools" | "images" | "skills" | "models" | "openapi" | "sparql" | "mcp" | "sandbox" | "server" | "defaults";
 
 /** A loaded skill, from the `get_skills` command. */
 export interface SkillInfo { id: string; name: string; description: string; category?: string; requires?: string[]; body?: string; builtin?: boolean; resources?: string[]; }
@@ -258,10 +434,11 @@ const BUILTIN_TOOLS = [
   { name: "web_search",          label: "Web Search",           icon: "🌐" },
   { name: "get_current_datetime", label: "Get Date / Time",      icon: "🕐" },
   { name: "run_python",          label: "Run Python (Code Sandbox)", icon: "🐍" },
+  { name: "generate_image",      label: "Generate Images (offline)", icon: "🎨" },
 ];
 
 // Tools that are opt-in: disabled unless the user explicitly turns them on.
-const OPT_IN_TOOLS = new Set(["run_python"]);
+const OPT_IN_TOOLS = new Set(["run_python", "generate_image"]);
 const toolEnabled = (enabled: Record<string, boolean>, name: string): boolean =>
   OPT_IN_TOOLS.has(name) ? enabled[name] === true : enabled[name] !== false;
 
@@ -1033,6 +1210,8 @@ function ToolsTab({ settings, onChange }: { settings: AppSettings; onChange: (s:
               <span className="admin-row-sub">
                 {t.name === "run_python"
                   ? "Global master switch. Executes LLM-written Python in a sandbox; asks for approval before the first run each session. Profiles can opt out individually."
+                  : t.name === "generate_image"
+                  ? "Global master switch. Creates images offline via a local stable-diffusion.cpp model — no cloud, no separate app. Turn on, then set it up in the 🎨 Images tab."
                   : t.name}
               </span>
             </div>
@@ -2665,9 +2844,12 @@ export function AdminPanel({ settings, onSave, onClose }: Props) {
       setDraft(d => ({ ...d, allowedDirs: dirs }));
     }
   };
+  // The Images tab only appears once image generation is switched on (keeps the bar clean otherwise).
+  const imageGenEnabled = draft.enabledTools?.generate_image === true;
   const tabs: { id: Tab; icon: string; label: string }[] = [
     { id: "profiles", icon: "🤖",  label: "Profiles" },
     { id: "tools",    icon: "⚡",  label: "Tools" },
+    ...(imageGenEnabled ? [{ id: "images" as Tab, icon: "🎨", label: "Images" }] : []),
     { id: "skills",   icon: "📚",  label: "Skills" },
     { id: "models",   icon: "🖥",  label: "Models" },
     { id: "openapi",  icon: "🌐",  label: "OpenAPI" },
@@ -2677,6 +2859,12 @@ export function AdminPanel({ settings, onSave, onClose }: Props) {
     { id: "server",   icon: "⚙️",  label: "Server" },
     { id: "defaults", icon: "🎛",  label: "Defaults" },
   ];
+
+  // If the Images tab is open and image generation gets switched off, fall back to Tools so the
+  // content area isn't left blank.
+  useEffect(() => {
+    if (tab === "images" && !imageGenEnabled) setTab("tools");
+  }, [tab, imageGenEnabled]);
 
   const saveAndClose = () => { onSave(draft); onClose(); };
 
@@ -2707,6 +2895,7 @@ export function AdminPanel({ settings, onSave, onClose }: Props) {
         <div className="admin-content">
           {tab === "profiles" && <ProfilesTab settings={draft} onChange={setDraft} />}
           {tab === "tools"   && <ToolsTab   settings={draft} onChange={setDraft} />}
+          {tab === "images"  && <ImageGenTab settings={draft} onChange={setDraft} />}
           {tab === "skills"  && <SkillsTab  skills={availableSkills} profile={activeProfile} onToggle={toggleSkill} onReload={reloadSkills} />}
           {tab === "models"  && <ModelsTab  settings={draft} onChange={setDraft} />}
           {tab === "openapi" && <OpenAPITab stored={ctxOpenAPI} onChange={setCtxOpenAPI} />}
