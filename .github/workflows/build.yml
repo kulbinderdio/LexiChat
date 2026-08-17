@@ -77,14 +77,6 @@ jobs:
       - name: Install JS dependencies
         run: npm ci
 
-      # Stage the prebuilt offline image-gen engine (stable-diffusion.cpp) for this platform so
-      # `tauri build` bundles it as a resource. A graceful no-op on targets with no prebuilt
-      # (Intel Mac, Linux-arm64) — those fall back to the in-app download at runtime.
-      - name: Fetch image-gen engine
-        run: node scripts/fetch-sd.mjs
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       # Build only — the release is assembled by the `release` job below, so that the
       # macOS DMG can be notarized *before* it is uploaded.
       #

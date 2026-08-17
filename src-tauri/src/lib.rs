@@ -659,10 +659,51 @@ async fn download_image_model(args: DownloadModelArgs, app: AppHandle) -> Result
     }
 }
 
-/// Cancel an in-flight model download (the streaming loop checks this each chunk).
+/// Cancel an in-flight model or engine download (the streaming loops check this each chunk).
 #[tauri::command]
 fn cancel_image_model_download(state: State<'_, AppState>) {
     state.image_model_download_cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Download + install the offline image engine (stable-diffusion.cpp) for this platform on first
+/// use, emitting progress on `image-engine-download`. Returns the installed sd path. The app ships
+/// without the engine (bundling unsigned binaries breaks macOS notarization), so it's fetched here.
+#[tauri::command]
+async fn download_image_engine(app: AppHandle) -> Result<String, String> {
+    use std::sync::atomic::Ordering;
+    use tauri::Emitter as _;
+    let cancel = {
+        let state = app.state::<AppState>();
+        state.image_model_download_cancel.store(false, Ordering::SeqCst);
+        state.image_model_download_cancel.clone()
+    };
+    let app2 = app.clone();
+    let mut last: u64 = 0;
+    let result = image_gen::download_engine(&cancel, |recv, total| {
+        if recv == 0 || recv.saturating_sub(last) >= 2_000_000 || Some(recv) == total {
+            last = recv;
+            let _ = app2.emit("image-engine-download", serde_json::json!({ "received": recv, "total": total, "done": false }));
+        }
+    }).await;
+    match result {
+        Ok(p) => {
+            let path = p.display().to_string();
+            let _ = app.emit("image-engine-download", serde_json::json!({ "done": true, "path": path }));
+            Ok(path)
+        }
+        Err(e) => {
+            let _ = app.emit("image-engine-download", serde_json::json!({ "done": true, "error": e }));
+            Err(e)
+        }
+    }
+}
+
+/// Whether this platform has a prebuilt engine + whether it's already installed. Drives the Images
+/// tab's "Install engine" affordance.
+#[tauri::command]
+fn image_engine_status() -> serde_json::Value {
+    let installed = image_gen::image_gen_dir_has_engine();
+    serde_json::json!({ "supported": image_gen::engine_supported(), "installed": installed })
 }
 
 #[tauri::command]
@@ -2137,13 +2178,6 @@ pub fn run() {
             jobs::spawn_scheduler(app.handle().clone());
             setup_tray(app)?;
 
-            // First-launch: install the bundled offline image-gen engine (sd + lib) from resources
-            // into the writable app-data dir so generate_image works with no setup. No-op if this
-            // platform ships none, or the user already has one.
-            if let Ok(res) = app.path().resource_dir() {
-                image_gen::provision_from_resources(&res);
-            }
-
             // Hide window on close instead of quitting — keeps scheduler alive
             if let Some(window) = app.get_webview_window("main") {
                 let w = window.clone();
@@ -2197,6 +2231,8 @@ pub fn run() {
             set_image_gen_config,
             download_image_model,
             cancel_image_model_download,
+            download_image_engine,
+            image_engine_status,
             get_skills,
             save_skill,
             delete_skill,

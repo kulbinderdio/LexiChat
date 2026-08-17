@@ -195,72 +195,146 @@ fn resolve_model(cfg: &ImageGenConfig) -> Option<PathBuf> {
     entries.into_iter().next()
 }
 
-/// Install the bundled sd engine (binary + runtime lib, shipped as app resources under
-/// `<resource_dir>/image-gen/`) into the writable app-data image-gen dir on first launch. Resources
-/// are read-only and lose the executable bit, so we can't run them in place — we copy once, set
-/// +x (and de-quarantine on macOS), and the normal data-dir resolution takes over. No-op if already
-/// installed, if the user provided their own, or if this platform ships no bundled engine.
-pub fn provision_from_resources(resource_dir: &Path) {
-    if let Some(dest) = image_gen_dir() {
-        provision_into(resource_dir, &dest);
+/// Pinned stable-diffusion.cpp release the engine is fetched from on first use.
+const ENGINE_RELEASE_TAG: &str = "master-820-de298c2";
+const ENGINE_REPO: &str = "leejet/stable-diffusion.cpp";
+
+/// Whether an sd engine is installed in the app data dir (drives the Images-tab status).
+pub fn image_gen_dir_has_engine() -> bool {
+    image_gen_dir()
+        .map(|d| d.join(if cfg!(windows) { "sd.exe" } else { "sd" }).is_file())
+        .unwrap_or(false)
+}
+
+/// Is a prebuilt engine available for this platform? (macOS-arm64/Metal, Windows-x64/Vulkan,
+/// Linux-x64/Vulkan.) Other targets have no upstream prebuilt.
+pub fn engine_supported() -> bool {
+    use std::env::consts::{ARCH, OS};
+    matches!((OS, ARCH), ("macos", "aarch64") | ("windows", "x86_64") | ("linux", "x86_64"))
+}
+
+/// Whether a release-asset name is the right engine build for this platform. Returns a priority
+/// (lower = preferred: GPU build before CPU) or None if it doesn't match.
+fn engine_asset_priority(name: &str) -> Option<u8> {
+    use std::env::consts::{ARCH, OS};
+    let n = name.to_ascii_lowercase();
+    match (OS, ARCH) {
+        ("macos", "aarch64") if n.contains("darwin") && n.contains("arm64") => Some(0),
+        ("windows", "x86_64") if n.contains("win") && n.contains("vulkan") && n.contains("x64") => Some(0),
+        ("windows", "x86_64") if n.contains("win") && n.contains("cpu") && n.contains("x64") => Some(1),
+        ("linux", "x86_64") if n.contains("linux") && n.contains("vulkan") && n.contains("x86_64") => Some(0),
+        ("linux", "x86_64") if n.contains("linux") && n.contains("x86_64") && !n.contains("rocm") && !n.contains("cuda") => Some(1),
+        _ => None,
     }
 }
 
-fn provision_into(resource_dir: &Path, dest: &Path) {
-    let dest_exe = dest.join(if cfg!(windows) { "sd.exe" } else { "sd" });
-    if dest_exe.is_file() {
-        return; // already provisioned or user-installed
+/// Download and install the offline image engine (stable-diffusion.cpp) for this platform into the
+/// app data dir on first use — the app ships without it (bundling unsigned binaries breaks macOS
+/// notarization). Small (~50 MB), one-time. Reports progress and honors `cancel`.
+pub async fn download_engine(
+    cancel: &std::sync::atomic::AtomicBool,
+    mut on_progress: impl FnMut(u64, Option<u64>),
+) -> Result<PathBuf, String> {
+    use std::io::Write;
+    use std::sync::atomic::Ordering;
+
+    if !engine_supported() {
+        return Err("The offline image engine isn't available for this platform yet.".to_string());
     }
-    let Some(src) = [resource_dir.join("image-gen"), resource_dir.join("resources").join("image-gen")]
-        .into_iter()
-        .find(|c| c.is_dir())
-    else {
-        return; // no bundled engine on this platform/build
-    };
-    let exe_names = ["sd", "sd.exe", "sd-cli", "sd-cli.exe"];
-    if !exe_names.iter().any(|n| src.join(n).is_file()) {
-        return; // resource dir present but no executable — nothing to install
-    }
-    if std::fs::create_dir_all(&dest).is_err() {
-        return;
-    }
-    if let Ok(rd) = std::fs::read_dir(&src) {
-        for entry in rd.flatten() {
-            let p = entry.path();
-            if !p.is_file() {
-                continue;
+    let dest = image_gen_dir().ok_or("Cannot resolve the app data directory.")?;
+    std::fs::create_dir_all(&dest).map_err(|e| format!("Cannot create image-gen dir: {e}"))?;
+
+    let client = reqwest::Client::builder().build().map_err(|e| format!("HTTP client error: {e}"))?;
+
+    // 1. Find the matching asset in the pinned release.
+    let rel_url = format!("https://api.github.com/repos/{ENGINE_REPO}/releases/tags/{ENGINE_RELEASE_TAG}");
+    let rel: serde_json::Value = client.get(&rel_url).header("User-Agent", "lexichat")
+        .send().await.map_err(|e| format!("Cannot reach the release server: {e}"))?
+        .json().await.map_err(|e| format!("Unexpected release data: {e}"))?;
+    let mut best: Option<(u8, String)> = None;
+    for a in rel.get("assets").and_then(|a| a.as_array()).map(|v| v.as_slice()).unwrap_or(&[]) {
+        let name = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        if let Some(p) = engine_asset_priority(name) {
+            if best.as_ref().map(|(bp, _)| p < *bp).unwrap_or(true) {
+                let url = a.get("browser_download_url").and_then(|u| u.as_str()).unwrap_or("").to_string();
+                best = Some((p, url));
             }
-            let name = p.file_name().unwrap_or_default();
-            let target = if exe_names.iter().any(|n| std::ffi::OsStr::new(n) == name) {
-                dest_exe.clone() // normalize the executable name to `sd`/`sd.exe`
-            } else {
-                dest.join(name)
-            };
-            let _ = std::fs::copy(&p, &target);
         }
     }
+    let (_, url) = best.ok_or("No matching engine build found in the release.")?;
+
+    // 2. Download the zip to a temp file (progress + cancel + truncation guard).
+    let mut resp = client.get(&url).header("User-Agent", "lexichat").send().await
+        .map_err(|e| format!("Engine download failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("Engine download failed: HTTP {}", resp.status()));
+    }
+    let total = resp.content_length();
+    let tmp_zip = dest.join("engine-download.zip.part");
+    let mut file = std::fs::File::create(&tmp_zip).map_err(|e| format!("Cannot write engine file: {e}"))?;
+    let mut received: u64 = 0;
+    on_progress(0, total);
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            drop(file); let _ = std::fs::remove_file(&tmp_zip);
+            return Err("Engine download cancelled.".to_string());
+        }
+        match resp.chunk().await.map_err(|e| format!("Engine download interrupted: {e}"))? {
+            Some(chunk) => { file.write_all(&chunk).map_err(|e| format!("Write error: {e}"))?; received += chunk.len() as u64; on_progress(received, total); }
+            None => break,
+        }
+    }
+    file.flush().ok(); drop(file);
+    if let Some(t) = total { if received < t {
+        let _ = std::fs::remove_file(&tmp_zip);
+        return Err(format!("Engine download incomplete ({received}/{t} bytes) — please retry."));
+    }}
+
+    // 3. Extract the sd executable + its shared libraries into the image-gen dir.
+    let sd = extract_engine(&tmp_zip, &dest);
+    let _ = std::fs::remove_file(&tmp_zip);
+    let sd = sd?;
+
+    // 4. Executable bit + de-quarantine (so a downloaded binary can run on macOS).
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = std::fs::metadata(&dest_exe) {
-            let mut perms = meta.permissions();
-            perms.set_mode(0o755);
-            let _ = std::fs::set_permissions(&dest_exe, perms);
-        }
+        if let Ok(meta) = std::fs::metadata(&sd) { let mut p = meta.permissions(); p.set_mode(0o755); let _ = std::fs::set_permissions(&sd, p); }
     }
-    // macOS Gatekeeper: strip quarantine so the copied binary/lib can run.
     #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("xattr")
-            .arg("-dr").arg("com.apple.quarantine").arg(&dest).status();
-    }
+    { let _ = std::process::Command::new("xattr").arg("-dr").arg("com.apple.quarantine").arg(&dest).status(); }
+
+    Ok(sd)
 }
 
-const SETUP_HELP: &str = "Image generation isn't set up yet. It needs a stable-diffusion.cpp \
-    executable (the `sd` binary — the offline, GUI-free image engine) and a diffusion model. \
-    Either put the `sd` binary and a `.gguf`/`.safetensors` model under the app's image-gen folder, \
-    or set their paths in Settings → Image Generation. (Tip: an SD/SDXL-Turbo model generates in \
-    ~4 steps and is fast on Apple Silicon.)";
+/// Extract the sd executable (normalized to `sd`/`sd.exe`) and its shared libraries from the release
+/// zip into `dest`. Returns the path to the installed executable.
+fn extract_engine(zip_path: &Path, dest: &Path) -> Result<PathBuf, String> {
+    let f = std::fs::File::open(zip_path).map_err(|e| format!("Cannot open engine archive: {e}"))?;
+    let mut archive = zip::ZipArchive::new(f).map_err(|e| format!("Bad engine archive: {e}"))?;
+    let dest_exe = dest.join(if cfg!(windows) { "sd.exe" } else { "sd" });
+    let mut found_exe = false;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        if !entry.is_file() { continue; }
+        let raw = entry.name().to_string();
+        let base = raw.rsplit(['/', '\\']).next().unwrap_or(&raw).to_string();
+        let low = base.to_ascii_lowercase();
+        let is_exe = matches!(low.as_str(), "sd-cli" | "sd" | "sd-cli.exe" | "sd.exe");
+        let is_lib = low.ends_with(".dylib") || low.ends_with(".dll") || low.ends_with(".so") || low.contains(".so.");
+        if !is_exe && !is_lib { continue; }
+        let out = if is_exe { dest_exe.clone() } else { dest.join(&base) };
+        let mut w = std::fs::File::create(&out).map_err(|e| format!("Cannot write {base}: {e}"))?;
+        std::io::copy(&mut entry, &mut w).map_err(|e| format!("Extract error: {e}"))?;
+        if is_exe { found_exe = true; }
+    }
+    if !found_exe { return Err("Engine archive did not contain the sd executable.".to_string()); }
+    Ok(dest_exe)
+}
+
+const SETUP_HELP: &str = "Image generation isn't set up yet. Open Settings → the Images tab and \
+    click \"Install image engine\" (a small one-time download), then pick and download a model. \
+    Everything runs offline on your machine after that.";
 
 const MODEL_HELP: &str = "No image model found. Put a diffusion model (.gguf or .safetensors — e.g. \
     an SD/SDXL-Turbo model) in the app's image-gen/models folder, or set its path in Settings → \
@@ -376,27 +450,29 @@ mod tests {
     }
 
     #[test]
-    fn provision_installs_engine_into_dest() {
-        let base = std::env::temp_dir().join(format!("lexi-prov-{}-{}", std::process::id(), line!()));
-        let res = base.join("res").join("image-gen");
-        let dest = base.join("dest");
-        std::fs::create_dir_all(&res).unwrap();
-        std::fs::write(res.join("sd"), b"#!/bin/sh\necho hi\n").unwrap();
-        std::fs::write(res.join("libstable-diffusion.dylib"), b"lib").unwrap();
+    fn engine_asset_priority_matches_this_platform_or_none() {
+        // Sanity: on a supported platform at least one representative asset name matches; on an
+        // unsupported one, nothing does. (Names mirror the stable-diffusion.cpp release assets.)
+        let samples = [
+            "sd-master-bin-Darwin-macOS-arm64.zip",
+            "sd-master-bin-win-vulkan-x64.zip",
+            "sd-master-bin-Linux-Ubuntu-x86_64-vulkan.zip",
+        ];
+        let any = samples.iter().any(|s| engine_asset_priority(s).is_some());
+        assert_eq!(any, engine_supported());
+    }
 
-        provision_into(&base.join("res"), &dest);
-
-        let exe = dest.join(if cfg!(windows) { "sd.exe" } else { "sd" });
-        assert!(exe.is_file(), "sd should be provisioned into dest");
-        assert!(dest.join("libstable-diffusion.dylib").is_file(), "runtime lib should be copied");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&exe).unwrap().permissions().mode();
-            assert!(mode & 0o111 != 0, "provisioned sd should be executable");
-        }
-        // Idempotent: a second call is a no-op (dest already has sd) and doesn't error.
-        provision_into(&base.join("res"), &dest);
-        let _ = std::fs::remove_dir_all(&base);
+    // Real end-to-end: fetch + extract the engine from GitHub and confirm the binary runs. Hits the
+    // network and installs into the real app-data dir, so it's #[ignore]d — run explicitly with
+    // `cargo test download_engine_real -- --ignored`.
+    #[tokio::test]
+    #[ignore]
+    async fn download_engine_real() {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let sd = download_engine(&cancel, |_, _| {}).await.expect("engine download+extract");
+        assert!(sd.is_file(), "sd should be installed");
+        let out = std::process::Command::new(&sd).arg("--help").output().expect("sd should run");
+        let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(text.contains("model") || text.contains("prompt"), "sd --help should print usage; got: {}", &text[..text.len().min(200)]);
     }
 }

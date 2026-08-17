@@ -243,7 +243,15 @@ function ImageGenTab({ settings, onChange }: { settings: AppSettings; onChange: 
   const [pct, setPct] = useState<number | null>(null);
   const [status, setStatus] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [engine, setEngine] = useState<{ supported: boolean; installed: boolean } | null>(null);
+  const [engineDl, setEngineDl] = useState(false);
+  const [enginePct, setEnginePct] = useState<number | null>(null);
+  const [engineMsg, setEngineMsg] = useState("");
 
+  const refreshEngine = () => {
+    invoke<{ supported: boolean; installed: boolean }>("image_engine_status").then(setEngine).catch(() => {});
+  };
+  useEffect(() => { refreshEngine(); }, []);
   useEffect(() => {
     const un = listen<{ received?: number; total?: number; done?: boolean; error?: string }>(
       "image-model-download", e => {
@@ -251,7 +259,13 @@ function ImageGenTab({ settings, onChange }: { settings: AppSettings; onChange: 
         if (p.done) return; // completion is handled by the awaited invoke below
         if (p.total && p.received != null) setPct(Math.round((p.received / p.total) * 100));
       });
-    return () => { un.then(f => f()); };
+    const un2 = listen<{ received?: number; total?: number; done?: boolean }>(
+      "image-engine-download", e => {
+        const p = e.payload;
+        if (p.done) return;
+        if (p.total && p.received != null) setEnginePct(Math.round((p.received / p.total) * 100));
+      });
+    return () => { un.then(f => f()); un2.then(f => f()); };
   }, []);
 
   const preset = MODEL_PRESETS.find(p => p.id === selId);
@@ -276,6 +290,13 @@ function ImageGenTab({ settings, onChange }: { settings: AppSettings; onChange: 
   };
   const cancel = () => { invoke("cancel_image_model_download").catch(() => {}); };
 
+  const installEngine = async () => {
+    setEngineDl(true); setEnginePct(0); setEngineMsg("Downloading engine…");
+    try { await invoke("download_image_engine"); setEngineMsg("✓ Engine installed"); refreshEngine(); }
+    catch (e) { setEngineMsg("✕ " + String(e)); }
+    setEngineDl(false);
+  };
+
   const inputStyle: React.CSSProperties = { width: "100%", padding: "6px 8px", fontSize: 12, fontFamily: "monospace", boxSizing: "border-box" };
   const lbl: React.CSSProperties = { fontSize: 11, opacity: 0.75, marginBottom: 3, display: "block" };
   const btn: React.CSSProperties = { padding: "7px 14px", fontSize: 13, cursor: "pointer", whiteSpace: "nowrap" };
@@ -289,8 +310,34 @@ function ImageGenTab({ settings, onChange }: { settings: AppSettings; onChange: 
         </div>
         <div style={{ padding: "12px 14px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
           <span className="admin-row-sub">
-            Pick a model and download it — everything runs offline on your machine, no account or cloud. Bigger models look better but use more disk and take longer.
+            Create images offline on your own machine — no account, no cloud. Install the engine once, then pick a model.
           </span>
+
+          {engine && !engine.supported && (
+            <div style={{ background: "rgba(180,120,20,0.08)", border: "1px solid rgba(180,120,20,0.3)", borderRadius: 10, padding: "10px 12px", fontSize: 12 }}>
+              Image generation isn't available on this platform yet (no prebuilt engine).
+            </div>
+          )}
+          {engine && engine.supported && !engine.installed && (
+            <div style={{ border: "1px solid var(--accent, #5b4bd6)", borderRadius: 10, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>Step 1 — Install the image engine</div>
+              <span className="admin-row-sub">A one-time ~50 MB download. It runs entirely on your machine; nothing is uploaded.</span>
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                {engineDl
+                  ? <button onClick={() => invoke("cancel_image_model_download").catch(() => {})} style={btn}>Cancel</button>
+                  : <button onClick={installEngine} style={{ ...btn, fontWeight: 600 }}>Install engine</button>}
+                <span className="admin-row-sub" style={{ fontSize: 11 }}>{engineDl ? `${enginePct ?? 0}%` : engineMsg}</span>
+              </div>
+              {engineDl && (
+                <div style={{ height: 6, background: "rgba(128,128,128,0.25)", borderRadius: 3, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${enginePct ?? 10}%`, background: "var(--accent, #5b4bd6)", transition: "width 0.2s" }} />
+                </div>
+              )}
+            </div>
+          )}
+          {engine && engine.installed && (
+            <span className="admin-row-sub" style={{ fontSize: 11, color: "#1a8a55" }}>✓ Image engine installed</span>
+          )}
 
           <div>
             <label style={lbl}>Model</label>
