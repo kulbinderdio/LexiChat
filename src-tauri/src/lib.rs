@@ -69,6 +69,9 @@ pub struct AppState {
     /// Token accumulator for the current turn (prompt, completion), summed across the turn's model
     /// calls by the stream parser and read back by the agent loop when it writes the usage record.
     pub turn_tokens: Mutex<(u64, u64)>,
+    /// Count of images generated this turn — gives each a stable name (generated_image_N.png) the
+    /// model can reference in run_python / a deck. Reset at the start of the agent loop.
+    pub turn_image_count: Mutex<u32>,
     /// Persistent sysinfo handle for the Usage panel's Live tab — kept between polls so CPU% is a
     /// real delta over the poll interval rather than a cold-start zero.
     pub sys: Mutex<sysinfo::System>,
@@ -131,6 +134,7 @@ impl Default for AppState {
             image_gen_config: Mutex::new(image_gen::ImageGenConfig::default()),
             image_model_download_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             turn_tokens: Mutex::new((0, 0)),
+            turn_image_count: Mutex::new(0),
             sys: Mutex::new(sysinfo::System::new()),
             apps_allowed: Mutex::new(std::collections::HashSet::new()),
             pending_app_approval: Mutex::new(None),

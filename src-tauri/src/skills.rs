@@ -266,6 +266,17 @@ show as broken squares.
   (/work persists across calls this turn).
 - Only reference `{{figure:1}}`…`{{figure:M}}` for the M charts you actually made — an out-of-range
   number renders as a broken image.
+- PHOTOS / ILLUSTRATIONS: if the deck needs photorealistic images, call `generate_image` FIRST (once
+  per image, before Step 3). Each is captured inline in creation order — so it's `{{figure:N}}` just
+  like a chart — AND its tool result reports a file path `/work/data/generated_image_N.png` that
+  Step 4 can `add_picture` into the .pptx. Do NOT re-generate images to reuse them; reuse those
+  figure numbers and paths. If you mix charts and photos, `{{figure:N}}` counts BOTH in creation order.
+- **CRITICAL — do it all in ONE turn.** After generating the images, keep going and build BOTH the
+  inline deck (Step 3) and the .pptx (Step 4) in the SAME response. Do NOT stop and ask the user to
+  "run it again" — `{{figure:N}}` resolves ONLY against images generated in the current turn, so if
+  you build the HTML deck in a later turn the photos render as blank "unavailable" boxes. (The image
+  *files* do persist, so a follow-up .pptx can still `add_picture` them — but the inline deck cannot
+  see them.) Budget your steps: generate every image, then immediately assemble both deliverables.
 
 ## Step 3 — Inline styled deck (create_artifact)
 Call `create_artifact` with a COMPLETE self-contained HTML document based on this template. It's a

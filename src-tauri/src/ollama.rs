@@ -1283,6 +1283,11 @@ pub async fn agent_loop<R: tauri::Runtime>(
         sandbox_paths.clone()
     } else {
         clean_tool_results(&results_dir);
+        // Fresh turn: reset the per-turn image counter so generated_image_N.png restarts at 1 and
+        // lines up with {{figure:N}}. We deliberately do NOT delete previous turns' generated images
+        // — they persist (cleaned by the 6h TTL above) so a follow-up turn ("now build the deck")
+        // can still read /work/data/generated_image_N.png to embed them into a .pptx.
+        if let Some(s) = app.try_state::<crate::AppState>() { *s.turn_image_count.lock().unwrap() = 0; }
         let _ = std::fs::remove_dir_all(&skill_staging); // clear any resources from a previous run
         let _ = std::fs::create_dir_all(&skill_staging);
         let mut v = sandbox_paths.clone();
@@ -1322,7 +1327,10 @@ pub async fn agent_loop<R: tauri::Runtime>(
     // wall-clock climb unbounded (observed: 30 calls / 13 min, and a 65-min map spiral). These
     // bound the WHOLE turn regardless of which tools are used.
     const GLOBAL_TOOL_CALL_CAP: usize = 15; // total tool dispatches across ALL tools this turn
-    const TURN_WALL_BUDGET_SECS: u64 = 360; // ~6 min; a stuck local model shouldn't outlive this
+    // ~10 min. The global tool cap (15) is the primary runaway guard; this wall is a backstop. It's
+    // generous because a legit image deck can spend minutes generating several photoreal images
+    // (each ~90s) before building the slides — a tighter wall would cut that off mid-workflow.
+    const TURN_WALL_BUDGET_SECS: u64 = 600;
     // Once a deliverable artifact (a map/chart/HTML) has been produced, only a little cleanup is
     // allowed before we force the final answer — otherwise the model "refines" it for many minutes
     // (observed: create_artifact, then 3 more run_python calls, still looping at 65 min).
@@ -2044,15 +2052,31 @@ async fn dispatch_tool<R: tauri::Runtime>(
             .unwrap_or_default();
         return match crate::image_gen::generate(&cfg, &prompt, negative, size, steps, seed).await {
             Ok(png) => {
+                let mut file_note = String::new();
                 if !silent {
                     if let Some(s) = app.try_state::<crate::AppState>() {
+                        // Show inline.
                         let b64 = B64.encode(&png);
                         s.pending_tool_images.lock().unwrap().push(format!("data:image/png;base64,{b64}"));
+                        // Stable per-turn number so the model can reference the SAME image again from a
+                        // file (results dir is staged into /work/data) without re-generating it.
+                        let n = { let mut c = s.turn_image_count.lock().unwrap(); *c += 1; *c };
+                        let dir = tool_results_dir();
+                        let _ = std::fs::create_dir_all(&dir);
+                        let fname = format!("generated_image_{n}.png");
+                        if std::fs::write(dir.join(&fname), &png).is_ok() {
+                            file_note = format!(" This is generated image #{n} this turn — to reuse it \
+                                WITHOUT re-generating: in run_python read /work/data/{fname} (e.g. \
+                                python-pptx add_picture), or embed it in a create_artifact HTML slide \
+                                as <img src=\"{{{{figure:{n}}}}}\"> (that figure number is correct if \
+                                you have generated only images this turn; if you also made charts, \
+                                {{{{figure:K}}}} counts all inline charts+images in creation order).");
+                        }
                     }
                 }
                 format!("[Generated an image for the prompt \"{prompt}\". It is displayed inline to \
-                    the user above. Refer to it naturally as \"shown above\"; do NOT output an image \
-                    URL or markdown image, and do NOT claim you cannot show images.]")
+                    the user above.{file_note} Refer to it naturally as \"shown above\"; do NOT output \
+                    an image URL or markdown image, and do NOT claim you cannot show images.]")
             }
             Err(e) => format!("Image generation error: {e}"),
         };

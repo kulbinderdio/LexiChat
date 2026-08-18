@@ -1717,7 +1717,7 @@ pub fn all_builtin_schemas() -> Vec<serde_json::Value> {
                  ("body","string","Plain text email body."),
                  ("reply_to_message_id","string","Message-ID to reply to, for threading (optional).")],
             vec!["to","subject","body"]),
-        schema("generate_image", "Generate an image from a text description using the local, offline image model. Use this whenever the user asks you to create, draw, generate, illustrate, paint, or make an image, picture, logo, or artwork. The generated image is displayed inline in the chat automatically — refer to it as \"shown above\"; do NOT output an image URL or markdown image.",
+        schema("generate_image", "Generate an image from a text description using the local, offline image model. Use this whenever the user asks you to create, draw, generate, illustrate, paint, or make an image, picture, logo, or artwork. The generated image is displayed inline automatically — refer to it as \"shown above\". To put generated images into a slide deck or document: embed each in a create_artifact HTML slide via <img src=\"{{figure:N}}\"> (N = generation order), OR read it in run_python from the path the tool result reports (/work/data/generated_image_N.png) for python-pptx add_picture. Do NOT re-generate images to reuse them.",
             vec![("prompt","string","A detailed description of the image to create. Be specific about subject, style, colours, and composition."),
                  ("negative_prompt","string","Things to avoid in the image (optional)."),
                  ("size","integer","Square image size in pixels, e.g. 512, 768, or 1024 (optional)."),
