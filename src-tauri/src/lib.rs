@@ -2257,6 +2257,18 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // Remember the window's size, position and maximised state across restarts.
+        // VISIBLE is deliberately excluded: the window is hidden (not destroyed) when closed to the
+        // tray, so saving visibility would restore the app with no window on next launch.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+                )
+                .build(),
+        )
         .setup(|app| {
             build_menu(app)?;
             jobs::spawn_scheduler(app.handle().clone());

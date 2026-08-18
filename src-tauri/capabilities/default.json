@@ -13,6 +13,7 @@
     "core:tray:allow-new",
     "core:tray:allow-set-tooltip",
     "core:tray:allow-set-icon",
-    "core:tray:allow-set-menu"
+    "core:tray:allow-set-menu",
+    "window-state:default"
   ]
 }
