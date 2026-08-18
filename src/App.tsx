@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ReactMarkdown, { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Settings, RotateCcw, Bug, Paperclip, Info, Clock, PanelLeft } from "lucide-react";
+import { Settings, RotateCcw, Bug, Paperclip, Info, Clock, PanelLeft, BarChart3 } from "lucide-react";
 import { JobsPanel } from "./JobsPanel";
 import type { JobRun } from "./jobTypes";
 import lexiLogo from "./assets/lexi.png";
@@ -14,6 +14,7 @@ import { ChatParamsButton, ChatParams, DEFAULT_CHAT_PARAMS, resolveParams } from
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { DebugPanel } from "./DebugPanel";
+import { UsageRail, UsageHistoryModal } from "./UsagePanel";
 import { HistoryPanel, ConversationMeta } from "./HistoryPanel";
 import "./App.css";
 
@@ -1385,6 +1386,8 @@ export default function App() {
   const [thinkingAt, setThinkingAt] = useState<number | null>(null);
   const [showAdmin, setShowAdmin] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
+  const [showUsageLive, setShowUsageLive] = useState(false);
+  const [showUsageHistory, setShowUsageHistory] = useState(false);
   const [showHistory, setShowHistory] = useState(false); // hidden on launch; toggle to open
   const [conversations, setConversations] = useState<ConversationMeta[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -1560,6 +1563,10 @@ export default function App() {
   // Refs keep the listener (registered once) pointed at the latest state/functions.
   const sendRef = useRef<((t: string) => Promise<void>) | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
+  // Per-turn usage tally: reset in send(), accumulated by the agent-* listeners, written to the
+  // local usage log on agent-done (the backend merges in token counts). All on-device.
+  const turnTallyRef = useRef<{ start: number; model: string; provider: string; profile: string; tools: Record<string, number>; images: number }>(
+    { start: 0, model: "", provider: "", profile: "", tools: {}, images: 0 });
   const isRunningRef = useRef(false);
   const autoApproveControlRef = useRef(false);
   const settingsRef = useRef(settings);
@@ -1683,6 +1690,7 @@ export default function App() {
 
     listen<{ name: string; args: string }>("agent-tool-call", e => {
       if (!streamActive()) return;
+      turnTallyRef.current.tools[e.payload.name] = (turnTallyRef.current.tools[e.payload.name] ?? 0) + 1;
       const call = { name: e.payload.name, args: e.payload.args, startedAt: Date.now() };
       setMessages(prev => {
         const updated = prev.map(m =>
@@ -1700,6 +1708,7 @@ export default function App() {
 
     listen<{ name: string; result: string; full_result?: string; full_truncated?: boolean; ui?: ToolUi; images?: string[]; artifact?: { title: string; html: string } }>("agent-tool-result", e => {
       if (!streamActive()) return;
+      turnTallyRef.current.images += e.payload.images?.length ?? 0;
       setThinkingAt(Date.now()); // tool finished — the model now thinks for the next step
       setMessages(prev => {
         const now = Date.now();
@@ -1766,6 +1775,18 @@ export default function App() {
       if (!streamActive()) return;
       setIsRunning(false);
       setThinkingAt(null);
+      // Record this turn's usage locally (backend merges in token counts). Best-effort, on-device.
+      const t = turnTallyRef.current;
+      if (t.start) {
+        const steps = Object.values(t.tools).reduce((a, b) => a + b, 0);
+        invoke("record_turn_usage", { args: {
+          ts: Math.floor(Date.now() / 1000),
+          model: t.model, provider: t.provider, profile: t.profile,
+          duration_ms: Date.now() - t.start, steps, tools: t.tools, images: t.images,
+          code_runs: t.tools["run_python"] ?? 0, error: !!e.payload.error,
+        } }).catch(() => {});
+        t.start = 0; // prevent a double-write
+      }
       setMessages(prev => {
         const closed = finalizeCallTimers(prev).map(m => m.streaming ? { ...m, streaming: false } : m);
         if (e.payload.error) return [...closed, { id: uid(), role: "error", text: e.payload.error }];
@@ -2138,6 +2159,12 @@ export default function App() {
       );
 
       const targetServer = serverForModel(settings.servers ?? [], selectedServerId, selectedModel);
+      // Start a fresh usage tally for this turn.
+      turnTallyRef.current = {
+        start: Date.now(), model: selectedModel,
+        provider: targetServer?.provider ?? "ollama", profile: activeProfile?.name ?? "",
+        tools: {}, images: 0,
+      };
       await invoke("send_message", {
         args: {
           model: selectedModel,
@@ -2353,6 +2380,10 @@ export default function App() {
           style={{ opacity: showDebug ? 1 : 0.55 }}>
           <Bug size={13} />
         </button>
+        <button className="btn icon-only" onClick={() => setShowUsageLive(v => !v)} title="Usage &amp; Performance"
+          style={{ opacity: showUsageLive ? 1 : 0.55 }}>
+          <BarChart3 size={13} />
+        </button>
         <button className="btn icon-only" onClick={() => setShowAbout(true)} title="About LexiChat">
           <Info size={13} />
         </button>
@@ -2537,8 +2568,12 @@ export default function App() {
 
       {/* Debug panel sidebar */}
       <DebugPanel visible={showDebug} clearKey={debugClearKey} />
+      {/* Live usage rail — docked beside the chat so stats stay visible while you chat */}
+      <UsageRail open={showUsageLive} onClose={() => setShowUsageLive(false)} onOpenHistory={() => setShowUsageHistory(true)} />
 
       </div>{/* end main content row */}
+
+      <UsageHistoryModal open={showUsageHistory} onClose={() => setShowUsageHistory(false)} />
 
       {showAdmin && (
         <AdminPanel

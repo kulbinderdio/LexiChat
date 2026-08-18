@@ -10,6 +10,7 @@ mod history;
 mod wiki;
 mod skills;
 mod image_gen;
+mod usage;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -65,6 +66,12 @@ pub struct AppState {
     pub image_gen_config: Mutex<image_gen::ImageGenConfig>,
     /// Set true to cancel an in-flight model download.
     pub image_model_download_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Token accumulator for the current turn (prompt, completion), summed across the turn's model
+    /// calls by the stream parser and read back by the agent loop when it writes the usage record.
+    pub turn_tokens: Mutex<(u64, u64)>,
+    /// Persistent sysinfo handle for the Usage panel's Live tab — kept between polls so CPU% is a
+    /// real delta over the poll interval rather than a cold-start zero.
+    pub sys: Mutex<sysinfo::System>,
     /// MCP server ids the user has approved to render/interact with apps this
     /// session (set by `approve_mcp_app`; reset on restart).
     pub apps_allowed: Mutex<std::collections::HashSet<String>>,
@@ -123,6 +130,8 @@ impl Default for AppState {
             pending_artifact: Mutex::new(None),
             image_gen_config: Mutex::new(image_gen::ImageGenConfig::default()),
             image_model_download_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            turn_tokens: Mutex::new((0, 0)),
+            sys: Mutex::new(sysinfo::System::new()),
             apps_allowed: Mutex::new(std::collections::HashSet::new()),
             pending_app_approval: Mutex::new(None),
             active_conversation_id: Mutex::new(None),
@@ -411,6 +420,9 @@ async fn send_message(
     // Fresh run — clear any stop request left over from a previous turn.
     state.cancel.store(false, std::sync::atomic::Ordering::SeqCst);
     let cancel = state.cancel.clone();
+    // Reset the per-turn token accumulator (the stream parser sums into it; the frontend reads it
+    // back via record_turn_usage when the turn ends).
+    *state.turn_tokens.lock().unwrap() = (0, 0);
 
     {
         // Base64-encode any attached images for vision models
@@ -704,6 +716,74 @@ async fn download_image_engine(app: AppHandle) -> Result<String, String> {
 fn image_engine_status() -> serde_json::Value {
     let installed = image_gen::image_gen_dir_has_engine();
     serde_json::json!({ "supported": image_gen::engine_supported(), "installed": installed })
+}
+
+#[derive(serde::Deserialize)]
+struct UsageStatsArgs { #[serde(default)] since: Option<i64> }
+
+/// Aggregate local usage records for the Usage panel's History view (all local; `since` = 0 = all).
+#[tauri::command]
+fn get_usage_stats(args: UsageStatsArgs) -> usage::UsageStats {
+    usage::aggregate(args.since.unwrap_or(0))
+}
+
+/// Record one completed turn. The frontend supplies everything it knows (model, profile, provider,
+/// tools, images, timing, error); the backend merges in the token counts it accumulated from the
+/// model stream (reset for the next turn) and appends the record. Best-effort, fully local.
+#[tauri::command]
+fn record_turn_usage(args: usage::UsageRecord, state: State<'_, AppState>) {
+    let mut rec = args;
+    let (p, c) = { let mut t = state.turn_tokens.lock().unwrap(); let v = *t; *t = (0, 0); v };
+    rec.prompt_tokens = p;
+    rec.completion_tokens = c;
+    usage::append(&rec);
+}
+
+/// Real-time system snapshot for the Usage panel's Live tab: global CPU%, memory, this process's
+/// memory, and Ollama's loaded models + VRAM (from /api/ps). All local.
+#[tauri::command]
+async fn system_stats(app: AppHandle) -> serde_json::Value {
+    use sysinfo::ProcessesToUpdate;
+    let (cpu, used, total, app_mem, cores) = {
+        let state = app.state::<AppState>();
+        let mut sys = state.sys.lock().unwrap();
+        sys.refresh_cpu_all();
+        sys.refresh_memory();
+        let pid = sysinfo::get_current_pid().ok();
+        if let Some(p) = pid { sys.refresh_processes(ProcessesToUpdate::Some(&[p]), true); }
+        let app_mem = pid.and_then(|p| sys.process(p)).map(|p| p.memory()).unwrap_or(0);
+        (sys.global_cpu_usage(), sys.used_memory(), sys.total_memory(), app_mem, sys.cpus().len())
+    };
+    // Ollama loaded models (only meaningful for an Ollama backend; default host otherwise).
+    let base = {
+        let state = app.state::<AppState>();
+        let b = state.backend.lock().unwrap();
+        if matches!(b.kind, ollama::ProviderKind::Ollama) { b.base_url.trim_end_matches('/').to_string() }
+        else { "http://localhost:11434".to_string() }
+    };
+    let models = fetch_ollama_ps(&base).await;
+    serde_json::json!({
+        "cpu": cpu, "mem_used": used, "mem_total": total, "app_mem": app_mem, "cores": cores,
+        "models": models,
+        "engine": { "supported": image_gen::engine_supported(), "installed": image_gen::image_gen_dir_has_engine() },
+    })
+}
+
+async fn fetch_ollama_ps(base: &str) -> serde_json::Value {
+    let client = reqwest::Client::new();
+    match client.get(format!("{base}/api/ps")).timeout(std::time::Duration::from_secs(3)).send().await {
+        Ok(r) => match r.json::<serde_json::Value>().await {
+            Ok(v) => serde_json::Value::Array(
+                v["models"].as_array().map(|a| a.iter().map(|m| serde_json::json!({
+                    "name": m["name"].as_str().unwrap_or(""),
+                    "size_vram": m["size_vram"].as_u64().unwrap_or(0),
+                    "size": m["size"].as_u64().unwrap_or(0),
+                    "expires_at": m["expires_at"].as_str().unwrap_or(""),
+                })).collect()).unwrap_or_default()),
+            Err(_) => serde_json::Value::Array(vec![]),
+        },
+        Err(_) => serde_json::Value::Array(vec![]),
+    }
 }
 
 #[tauri::command]
@@ -2233,6 +2313,9 @@ pub fn run() {
             cancel_image_model_download,
             download_image_engine,
             image_engine_status,
+            get_usage_stats,
+            record_turn_usage,
+            system_stats,
             get_skills,
             save_skill,
             delete_skill,

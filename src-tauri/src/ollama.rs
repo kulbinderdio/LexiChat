@@ -448,6 +448,18 @@ fn parse_ollama_line<R: tauri::Runtime>(
             if let Ok(wtc) = serde_json::from_value::<WireToolCall>(tc.clone()) { tool_calls.push(wtc); }
         }
     }
+    // The final chunk (done:true) carries token counts — accumulate them into the per-turn total
+    // (summed across the turn's model calls; the agent loop reads + resets them for the usage record).
+    if v["done"].as_bool() == Some(true) {
+        let p = v["prompt_eval_count"].as_u64().unwrap_or(0);
+        let c = v["eval_count"].as_u64().unwrap_or(0);
+        if p > 0 || c > 0 {
+            if let Some(s) = app.try_state::<crate::AppState>() {
+                let mut t = s.turn_tokens.lock().unwrap();
+                t.0 += p; t.1 += c;
+            }
+        }
+    }
     Ok(())
 }
 
