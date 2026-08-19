@@ -323,13 +323,18 @@ Design: confident cover title, generous whitespace, ≤6 bullets, prefer a chart
 over a text wall. If `create_artifact` isn't available, skip this step and still do the .pptx.
 
 ## Step 4 — Editable PowerPoint (run_python + python-pptx), THEMED (not plain)
-For chart slides, `plt.savefig('/work/chartN.png')` then `add_picture` it. The charts may come from an
-earlier call this turn (/work persists) or the same call — either works.
+CRITICAL: EVERY image in your inline deck MUST also be embedded in the .pptx — add ONE picture slide
+per image with `add_picture` (the inline `{{figure:N}}` deck and the .pptx are built separately; the
+.pptx does NOT inherit them). Image files to embed: charts you `plt.savefig('/work/chartN.png')` this
+turn, and photos from `generate_image` at `/work/data/generated_image_N.png` (its tool result gave you
+that exact path). /work persists across calls this turn, so files saved earlier are still there.
 ```python
 from pptx import Presentation
 from pptx.util import Inches, Pt, Emu
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
+from PIL import Image
+import os
 
 ACCENT = RGBColor(0x4f, 0x46, 0xe5)   # match the deck's --accent
 BG     = RGBColor(0x0f, 0x17, 0x2a)
@@ -352,6 +357,20 @@ def textbox(slide, text, top, size, color, bold=False, align=PP_ALIGN.LEFT):
     r.font.size = Pt(size); r.font.bold = bold; r.font.color.rgb = color; r.font.name = 'Calibri'
     return tf
 
+def picture_slide(path, title):
+    # Themed slide with the image fitted (aspect preserved) below the title. Skips a missing file
+    # loudly instead of crashing the whole deck.
+    if not os.path.exists(path):
+        print('WARNING: image not found, slide skipped:', path); return None
+    s = prs.slides.add_slide(prs.slide_layouts[6]); fill(s, BG); accent_bar(s)
+    textbox(s, title, Inches(0.6), 30, ACCENT, bold=True)
+    iw, ih = Image.open(path).size
+    max_w, max_h = int(W - Inches(1.8)), int(H - Inches(2.2))
+    scale = min(max_w / iw, max_h / ih)
+    w, h = int(iw * scale), int(ih * scale)
+    s.shapes.add_picture(path, int((int(W) - w) / 2), Inches(1.7), width=w, height=h)
+    return s
+
 # Cover slide
 s = prs.slides.add_slide(prs.slide_layouts[6]); fill(s, BG)
 textbox(s, 'Deck title', Inches(2.6), 48, FG, bold=True)
@@ -366,10 +385,11 @@ for j, line in enumerate(['Point one', 'Point two', 'Point three']):
     r = p.add_run(); r.text = '•  ' + line; r.font.size = Pt(20); r.font.color.rgb = FG; r.font.name = 'Calibri'
     p.space_after = Pt(10)
 
-# A chart slide (use a PNG you saved earlier)
-# s = prs.slides.add_slide(prs.slide_layouts[6]); fill(s, BG); accent_bar(s)
-# textbox(s, 'A chart slide', Inches(0.6), 32, ACCENT, bold=True)
-# s.shapes.add_picture('/work/chart1.png', Inches(1.5), Inches(1.8), width=Inches(10))
+# Image slides — REQUIRED: add one per image shown inline, using its real file path.
+# A generated photo (path from the generate_image tool result):
+picture_slide('/work/data/generated_image_1.png', 'A generated photo')
+# A chart you saved this turn:
+# picture_slide('/work/chart1.png', 'Revenue by month')
 
 prs.save('/work/out/deck.pptx'); print('saved /work/out/deck.pptx')
 ```
@@ -377,6 +397,8 @@ prs.save('/work/out/deck.pptx'); print('saved /work/out/deck.pptx')
 ## Rules
 - Show the inline deck AND save the .pptx. Quote the real saved path from the tool result — never
   tell the user the file is at /work/out (they can't open that).
+- Parity: every chart/photo shown inline must ALSO be a picture slide in the .pptx (call
+  `picture_slide(...)` for each). A .pptx that's missing the images the user saw inline is a bug.
 - One idea per slide, takeaway titles, ≤6 bullets, consistent colours/fonts. Design it; don't ship
   plain black-on-white text.
 "##;
