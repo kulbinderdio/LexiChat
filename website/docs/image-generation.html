@@ -72,6 +72,7 @@ tailwind.config = {
       <a href="#setup" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Setup</a>
       <a href="#models" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Choosing a model</a>
       <a href="#photorealism" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Photorealism</a>
+      <a href="#editing" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Editing an image</a>
       <a href="#parameters" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Advanced settings</a>
       <a href="#platforms" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Platform support</a>
       <a href="#privacy" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Privacy</a>
@@ -87,7 +88,7 @@ tailwind.config = {
     </div>
 
     <h1 class="text-3xl md:text-4xl font-bold tracking-tight mb-3">Image Generation</h1>
-    <p class="text-lg text-slate-600 mb-10">Create images from a text description — entirely on your own machine. No account, no cloud, no per-image cost. Just ask the assistant to draw or photograph something and it appears in the chat.</p>
+    <p class="text-lg text-slate-600 mb-10">Create images from a text description — or edit a photo you attach — entirely on your own machine. No account, no cloud, no per-image cost. Just ask the assistant to draw, photograph, or change something and it appears in the chat.</p>
 
     <!-- Overview -->
     <section id="overview" class="mb-14">
@@ -232,6 +233,51 @@ tailwind.config = {
       </div>
     </section>
 
+    <!-- Editing an image -->
+    <section id="editing" class="mb-14">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">brush</span> Editing an image you attach
+      </h2>
+      <p class="text-slate-600 mb-4">You don't have to start from a blank canvas. <b>Attach a photo</b> (the paperclip in the chat box) and ask LexiChat to change it — "make the house in the foreground pink", "give this a watercolour look", "turn the sky to sunset". It re-paints your <em>actual</em> image, keeping the overall composition, rather than inventing a new one from scratch.</p>
+
+      <div class="grid md:grid-cols-2 gap-4 mb-4">
+        <figure class="bg-white border border-slate-200 rounded-xl p-3">
+          <img src="../resources/edit-before.png" alt="Original attached photo of a street" class="w-full rounded-lg" loading="lazy" />
+          <figcaption class="text-xs font-semibold text-slate-400 uppercase tracking-wider mt-2 text-center">You attach this</figcaption>
+        </figure>
+        <figure class="bg-white border border-slate-200 rounded-xl p-3">
+          <img src="../resources/edit-after.png" alt="The same street with only the foreground house repainted pink; the rest is identical" class="w-full rounded-lg" loading="lazy" />
+          <figcaption class="text-xs font-semibold text-slate-400 uppercase tracking-wider mt-2 text-center">"paint the foreground house pink"</figcaption>
+        </figure>
+      </div>
+      <p class="text-slate-500 text-sm mb-5">Only the foreground house changed — every other house, the road and the sky are <b>pixel-for-pixel the original</b>. That's a <em>region</em> edit (below). Edit the whole image instead and the wider scene can shift too; that's where <b>Strength</b> comes in.</p>
+
+      <div class="rounded-xl p-5 bg-emerald-50 border border-emerald-100 mb-4">
+        <div class="font-medium mb-2 flex items-center gap-2 text-emerald-900"><span class="material-symbols-outlined text-lg">gesture</span> Change just one part — keep the rest untouched</div>
+        <p class="text-emerald-900/80 text-sm mb-3">By default an edit re-imagines the whole frame guided by your photo, so unrelated areas can drift. To change <b>only</b> a specific area and leave everything else exactly as-is, tell LexiChat which part — two ways:</p>
+        <ul class="space-y-2 text-sm text-emerald-900/90">
+          <li class="flex gap-2"><span class="material-symbols-outlined text-sm mt-0.5">brush</span><b>Paint it (most precise).</b> On an attached image, click the <b>✎</b> button, brush over the exact area to change, and send. Only what you paint is regenerated; the rest is copied back untouched.</li>
+          <li class="flex gap-2"><span class="material-symbols-outlined text-sm mt-0.5">chat</span><b>Just describe it.</b> Say "only change the sky" or "just the building on the left" and LexiChat estimates the region for you. Great for broad areas; painting is better for intricate shapes.</li>
+        </ul>
+      </div>
+
+      <div class="bg-white border border-slate-200 rounded-xl p-5 mb-4">
+        <div class="font-medium mb-2 flex items-center gap-2"><span class="material-symbols-outlined text-accent text-lg">speed</span> Strength — how far to change it</div>
+        <p class="text-slate-600 text-sm mb-2">The one dial that matters for edits. It runs 0 → 1:</p>
+        <ul class="space-y-1.5 text-sm text-slate-600">
+          <li class="flex gap-2"><span class="material-symbols-outlined text-sm text-accent mt-0.5">arrow_downward</span><b>Low (≈0.3–0.5)</b> — subtle: recolour or restyle while staying very close to the original.</li>
+          <li class="flex gap-2"><span class="material-symbols-outlined text-sm text-accent mt-0.5">drag_handle</span><b>Mid (≈0.5–0.65, the default)</b> — repaint an object or change the mood while keeping the composition.</li>
+          <li class="flex gap-2"><span class="material-symbols-outlined text-sm text-accent mt-0.5">arrow_upward</span><b>High (≈0.7–0.9)</b> — a loose reinterpretation that only borrows the layout.</li>
+        </ul>
+        <p class="text-slate-500 text-sm mt-3">Just say "keep it subtle" or "change it more" and LexiChat picks a strength for you — or set it yourself under <b>▸ Advanced settings</b>.</p>
+      </div>
+
+      <div class="rounded-xl p-5 bg-indigo-50 border border-indigo-100">
+        <div class="font-medium mb-1 flex items-center gap-2 text-indigo-900"><span class="material-symbols-outlined text-lg">precision_manufacturing</span> Two kinds of edit</div>
+        <p class="text-indigo-900/80 text-sm">Image-to-image (above) is <b>creative</b> — perfect for "make it feel warmer", a new colour scheme, or a style change, but it isn't pixel-exact and can't mask a single object perfectly. For <b>precise, deterministic</b> edits — an exact colour swap, cropping, resizing, adding text or a logo overlay — LexiChat instead uses its built-in Python tool with Pillow on your attached file. You don't choose between them; just describe what you want and it picks the right approach.</p>
+      </div>
+    </section>
+
     <!-- Advanced parameters -->
     <section id="parameters" class="mb-14">
       <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
@@ -246,7 +292,7 @@ tailwind.config = {
         </div>
         <div class="bg-white border border-slate-200 rounded-xl p-5">
           <div class="font-medium mb-1 flex items-center gap-2"><span class="material-symbols-outlined text-accent text-lg">aspect_ratio</span> Size (px)</div>
-          <p class="text-slate-600 text-sm">Output resolution (square). <b>Match it to the model's native size:</b> SDXL-family models (SDXL-Turbo, RealVisXL, SDXL base) look best at <b>1024</b>; SD 1.5 at <b>512</b>. Larger sizes add detail but use more memory and time — and going far below native size hurts quality.</p>
+          <p class="text-slate-600 text-sm">Output resolution (square) for new images. <b>Match it to the model's native size:</b> SDXL-family models (SDXL-Turbo, RealVisXL, SDXL base) look best at <b>1024</b>; SD 1.5 at <b>512</b>. Larger sizes add detail but use more memory and time — and going far below native size hurts quality. When <b>editing</b> an attached image, your photo's original aspect ratio is kept and this value just caps the longer edge.</p>
         </div>
         <div class="bg-white border border-slate-200 rounded-xl p-5">
           <div class="font-medium mb-1 flex items-center gap-2"><span class="material-symbols-outlined text-accent text-lg">tune</span> CFG scale (guidance)</div>
@@ -255,6 +301,10 @@ tailwind.config = {
         <div class="bg-white border border-slate-200 rounded-xl p-5">
           <div class="font-medium mb-1 flex items-center gap-2"><span class="material-symbols-outlined text-accent text-lg">block</span> Negative prompt</div>
           <p class="text-slate-600 text-sm">A description of what to <em>avoid</em> (e.g. "blurry, extra fingers, cartoon"). LexiChat fills this in automatically for photo requests; the AI can also set it per image based on what you ask for.</p>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-xl p-5">
+          <div class="font-medium mb-1 flex items-center gap-2"><span class="material-symbols-outlined text-accent text-lg">speed</span> Strength <span class="text-xs font-normal text-slate-400">(editing only)</span></div>
+          <p class="text-slate-600 text-sm">Only applies when you <b>attach an image to edit</b> (see <a href="#editing" class="text-accent hover:underline">Editing an image</a>). It sets how far the result may move from your original, 0 → 1 — low stays faithful, high reinterprets. Default ≈0.6. Ignored for images generated from scratch.</p>
         </div>
         <div class="bg-white border border-slate-200 rounded-xl p-5">
           <div class="font-medium mb-1 flex items-center gap-2"><span class="material-symbols-outlined text-accent text-lg">casino</span> Seed</div>
