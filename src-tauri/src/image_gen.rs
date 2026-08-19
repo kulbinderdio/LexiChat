@@ -345,6 +345,77 @@ const GENERATE_TIMEOUT_SECS: u64 = 300;
 
 /// Generate one image. Returns PNG bytes on success, or a human-readable error the model relays.
 /// `size` overrides the config default; 0 falls back to config → 512.
+/// Scale (w,h) so the long edge is at most `max_edge`, preserving aspect ratio, then round each
+/// side to a multiple of 64 (Stable Diffusion requires that) with a floor of 64. Used for img2img
+/// so an edited photo keeps its shape instead of being squashed into a square.
+fn fit_dims(w: u32, h: u32, max_edge: u32) -> (u32, u32) {
+    if w == 0 || h == 0 { return (512, 512); }
+    let max_edge = if max_edge == 0 { 1024 } else { max_edge };
+    let long = w.max(h);
+    let scale = if long > max_edge { max_edge as f64 / long as f64 } else { 1.0 };
+    let round64 = |v: f64| -> u32 { (((v / 64.0).round() as u32).max(1)) * 64 };
+    (round64(w as f64 * scale), round64(h as f64 * scale))
+}
+
+/// Rasterize a mask from a tiny normalized-shape DSL (used for model-driven region edits). Shapes
+/// are separated by ';', each either `rect x y w h` (top-left + size) or `ellipse cx cy rx ry`
+/// (centre + radii), all as fractions 0..1 of the image. White (255) marks the region to edit; the
+/// rest is black (kept). Returns a grayscale PNG at `w`×`h`, or None if no valid shape parsed.
+pub fn rasterize_mask(dsl: &str, w: u32, h: u32) -> Option<Vec<u8>> {
+    use image::{GrayImage, Luma};
+    if w == 0 || h == 0 { return None; }
+    let mut img = GrayImage::from_pixel(w, h, Luma([0u8]));
+    let mut any = false;
+    for shape in dsl.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+        let mut it = shape.split_whitespace();
+        let kind = it.next().unwrap_or("");
+        let nums: Vec<f32> = it.filter_map(|t| t.parse::<f32>().ok()).collect();
+        if nums.len() < 4 { continue; }
+        let (a, b, c, d) = (nums[0], nums[1], nums[2], nums[3]);
+        match kind {
+            "rect" => {
+                let x0 = (a.clamp(0.0, 1.0) * w as f32) as i64;
+                let y0 = (b.clamp(0.0, 1.0) * h as f32) as i64;
+                let x1 = ((a + c).clamp(0.0, 1.0) * w as f32) as i64;
+                let y1 = ((b + d).clamp(0.0, 1.0) * h as f32) as i64;
+                for y in y0.max(0)..y1.min(h as i64) {
+                    for x in x0.max(0)..x1.min(w as i64) {
+                        img.put_pixel(x as u32, y as u32, Luma([255]));
+                    }
+                }
+                any = true;
+            }
+            "ellipse" => {
+                let (cx, cy, rx, ry) = (a * w as f32, b * h as f32, (c * w as f32).max(1.0), (d * h as f32).max(1.0));
+                for y in 0..h {
+                    for x in 0..w {
+                        let dx = (x as f32 - cx) / rx;
+                        let dy = (y as f32 - cy) / ry;
+                        if dx * dx + dy * dy <= 1.0 { img.put_pixel(x, y, Luma([255])); }
+                    }
+                }
+                any = true;
+            }
+            _ => {}
+        }
+    }
+    if !any { return None; }
+    // Feather the edges so the inpaint blends instead of showing a hard seam.
+    let sigma = (w.min(h) as f32 * 0.012).max(2.0);
+    let blurred = image::imageops::blur(&img, sigma);
+    let mut buf = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageLuma8(blurred).write_to(&mut buf, image::ImageFormat::Png).ok()?;
+    Some(buf.into_inner())
+}
+
+/// Generate an image from `prompt` (text→image), or — when `init_image` is a real path to an
+/// existing image — EDIT that image (image→image): the result keeps the source's composition and
+/// only changes it as far as `strength` allows (0 = identical, 1 = ignore the source). This is what
+/// lets "recolour the building in this photo pink" edit the actual photo rather than reimagining it.
+///
+/// When `mask_png` is supplied (with an init image) the edit is INPAINTED: only the white area of
+/// the mask is regenerated, and the result is composited back onto the pixel-exact original so
+/// everything outside the mask is unchanged — "update just this part" instead of reimagining.
 pub async fn generate(
     cfg: &ImageGenConfig,
     prompt: &str,
@@ -352,6 +423,9 @@ pub async fn generate(
     size: u32,
     steps: u32,
     seed: Option<i64>,
+    init_image: Option<&str>,
+    strength: Option<f32>,
+    mask_png: Option<&[u8]>,
 ) -> Result<Vec<u8>, String> {
     let bin = resolve_binary(cfg).ok_or_else(|| SETUP_HELP.to_string())?;
     let model = resolve_model(cfg).ok_or_else(|| MODEL_HELP.to_string())?;
@@ -359,6 +433,16 @@ pub async fn generate(
     let dim = if size > 0 { size } else if cfg.size > 0 { cfg.size } else { 512 };
     let steps = if steps > 0 { steps } else if cfg.steps > 0 { cfg.steps } else { 20 };
     let cfg_scale = if cfg.cfg_scale > 0.0 { cfg.cfg_scale } else { 7.0 };
+    // For img2img, derive the output size from the source image (preserve aspect, cap the long edge
+    // — a full-res photo would be far too slow/large for the CPU/GPU sd build). `size`, if given,
+    // caps the long edge; otherwise 1024. For txt2img keep the square `dim`.
+    let (out_w, out_h) = match init_image {
+        Some(p) => match imagesize::size(p) {
+            Ok(d) => fit_dims(d.width as u32, d.height as u32, if size > 0 { size } else { 1024 }),
+            Err(e) => return Err(format!("Could not read the source image '{p}': {e}")),
+        },
+        None => (dim, dim),
+    };
 
     let out_dir = std::env::temp_dir().join("lexichat-imagegen");
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("Cannot create output dir: {e}"))?;
@@ -368,14 +452,45 @@ pub async fn generate(
         .unwrap_or(0);
     let out = out_dir.join(format!("img-{nanos}.png"));
 
+    // Inpaint masking only applies when we have an init image to edit. Decode the mask, resize it to
+    // the working resolution, and write it next to the output for sd to consume via --mask.
+    let mask_file: Option<std::path::PathBuf> = match (init_image, mask_png) {
+        (Some(_), Some(m)) => {
+            let decoded = image::load_from_memory(m)
+                .map_err(|e| format!("Could not read the edit mask: {e}"))?
+                .to_luma8();
+            let resized = image::imageops::resize(&decoded, out_w, out_h, image::imageops::FilterType::Triangle);
+            let mf = out_dir.join(format!("mask-{nanos}.png"));
+            resized.save(&mf).map_err(|e| format!("Could not write the edit mask: {e}"))?;
+            Some(mf)
+        }
+        _ => None,
+    };
+
     let mut cmd = tokio::process::Command::new(&bin);
     cmd.arg("-m").arg(&model)
         .arg("-p").arg(prompt)
         .arg("-o").arg(&out)
-        .arg("-W").arg(dim.to_string())
-        .arg("-H").arg(dim.to_string())
+        .arg("-W").arg(out_w.to_string())
+        .arg("-H").arg(out_h.to_string())
         .arg("--steps").arg(steps.to_string())
         .arg("--cfg-scale").arg(format!("{cfg_scale}"));
+    if let Some(init) = init_image {
+        // img2img: in sd.cpp, supplying an init image in the default `img_gen` mode denoises FROM
+        // that image (no separate mode flag exists in this build), keeping the source and changing
+        // it only up to `strength` (default 0.6 — enough to repaint an object while preserving the
+        // overall photo; lower stays closer to the original).
+        // With a mask (inpaint) we want a strong change WITHIN the region — the surrounding photo is
+        // protected by the composite step regardless — so default higher there; plain img2img
+        // defaults gentler to avoid reimagining the whole frame.
+        let default_strength = if mask_file.is_some() { 0.85 } else { 0.6 };
+        let strength = strength.unwrap_or(default_strength).clamp(0.0, 1.0);
+        cmd.arg("-i").arg(init)
+            .arg("--strength").arg(format!("{strength}"));
+        if let Some(mf) = &mask_file {
+            cmd.arg("--mask").arg(mf);
+        }
+    }
     if let Some(n) = negative.map(str::trim).filter(|n| !n.is_empty()) {
         cmd.arg("-n").arg(n);
     }
@@ -419,10 +534,48 @@ pub async fn generate(
     let bytes = std::fs::read(&out)
         .map_err(|e| format!("Image generator ran but produced no output file: {e}"))?;
     let _ = std::fs::remove_file(&out);
+    if let Some(mf) = &mask_file { let _ = std::fs::remove_file(mf); }
     if bytes.is_empty() {
         return Err("Image generator produced an empty file.".to_string());
     }
+
+    // Inpaint composite: paste ONLY the masked region of the sd output back onto the pixel-exact
+    // original, at the original's full resolution. Everything outside the mask is byte-for-byte the
+    // source photo, so the edit is local ("update just this part") rather than a whole-frame redo.
+    if let (Some(init), Some(mask)) = (init_image, mask_png) {
+        if let Ok(edited) = composite_inpaint(init, &bytes, mask) {
+            return Ok(edited);
+        }
+        // If compositing fails for any reason, fall back to the raw sd output rather than erroring.
+    }
     Ok(bytes)
+}
+
+/// Composite the sd inpaint `edited_png` onto the original at `init_path`, blending by `mask_png`
+/// (white = take the edit, black = keep the original), at the ORIGINAL image's resolution.
+fn composite_inpaint(init_path: &str, edited_png: &[u8], mask_png: &[u8]) -> Result<Vec<u8>, String> {
+    use image::imageops::FilterType;
+    let orig = image::open(init_path).map_err(|e| format!("open original: {e}"))?.to_rgba8();
+    let (w, h) = orig.dimensions();
+    let edited = image::load_from_memory(edited_png).map_err(|e| format!("decode edited: {e}"))?;
+    let edited = image::imageops::resize(&edited.to_rgba8(), w, h, FilterType::Lanczos3);
+    let mask = image::load_from_memory(mask_png).map_err(|e| format!("decode mask: {e}"))?;
+    let mask = image::imageops::resize(&mask.to_luma8(), w, h, FilterType::Triangle);
+
+    let mut out = orig.clone();
+    for (x, y, px) in out.enumerate_pixels_mut() {
+        let a = mask.get_pixel(x, y)[0] as u32; // 0..255 blend weight
+        if a == 0 { continue; }
+        let e = edited.get_pixel(x, y);
+        let o = *px;
+        for c in 0..3 {
+            px[c] = ((e[c] as u32 * a + o[c] as u32 * (255 - a)) / 255) as u8;
+        }
+    }
+    let mut buf = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(out).write_to(&mut buf, image::ImageFormat::Png)
+        .map_err(|e| format!("encode composite: {e}"))?;
+    Ok(buf.into_inner())
 }
 
 #[cfg(test)]
@@ -437,15 +590,67 @@ mod tests {
     }
 
     #[test]
+    fn fit_dims_preserves_aspect_caps_and_rounds_to_64() {
+        // Landscape photo capped to 1024 long edge, sides rounded to /64.
+        let (w, h) = fit_dims(4000, 3000, 1024);
+        assert!(w <= 1024 && h <= 1024);
+        assert_eq!(w % 64, 0);
+        assert_eq!(h % 64, 0);
+        assert!(w > h); // landscape stays landscape
+        // Small image is not upscaled, just rounded to /64.
+        let (w2, h2) = fit_dims(500, 500, 1024);
+        assert_eq!((w2, h2), (512, 512));
+        // Degenerate input falls back to a safe square.
+        assert_eq!(fit_dims(0, 0, 1024), (512, 512));
+    }
+
+    #[test]
+    fn rasterize_mask_marks_region_and_ignores_junk() {
+        // A rect over the left half → left column white, right column black; feathered so exact
+        // centre values are near the extremes rather than precisely 0/255.
+        let png = rasterize_mask("rect 0 0 0.5 1.0", 128, 128).expect("some mask");
+        let m = image::load_from_memory(&png).unwrap().to_luma8();
+        assert!(m.get_pixel(10, 64)[0] > 200, "inside region should be near-white");
+        assert!(m.get_pixel(118, 64)[0] < 55, "outside region should be near-black");
+        // No parseable shape → None (caller then treats it as a whole-image img2img).
+        assert!(rasterize_mask("garbage; nonsense", 64, 64).is_none());
+        assert!(rasterize_mask("", 64, 64).is_none());
+    }
+
+    #[test]
     fn explicit_missing_model_is_none() {
         let cfg = ImageGenConfig { model_path: "/nope/model.gguf".into(), ..Default::default() };
         assert!(resolve_model(&cfg).is_none());
     }
 
+    // Real end-to-end inpaint check — needs the installed engine+model, so ignored in CI.
+    // Run locally with: cargo test masked_inpaint_keeps_outside_region -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn masked_inpaint_keeps_outside_region() {
+        use image::{RgbImage, Rgb};
+        let dir = std::env::temp_dir().join("lexichat-inpaint-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let init = dir.join("init.png");
+        // Solid grey source so any change is obvious.
+        RgbImage::from_pixel(512, 512, Rgb([120, 120, 120])).save(&init).unwrap();
+        let mask = rasterize_mask("rect 0.35 0.35 0.3 0.3", 512, 512).expect("mask");
+
+        let cfg = ImageGenConfig::default(); // auto-detects the installed engine + model
+        let png = generate(&cfg, "a bright red square", None, 512, 4, Some(0), init.to_str(), None, Some(&mask))
+            .await.expect("generate should succeed with an installed engine");
+        let out = image::load_from_memory(&png).unwrap().to_rgb8();
+        assert_eq!(out.dimensions(), (512, 512), "output is at the original resolution");
+        // A far corner is outside the (feathered) mask → must be the untouched original grey.
+        assert_eq!(out.get_pixel(5, 5), &Rgb([120, 120, 120]), "outside the mask must be pixel-identical");
+        // The centre of the mask should have changed.
+        assert_ne!(out.get_pixel(256, 256), &Rgb([120, 120, 120]), "inside the mask must change");
+    }
+
     #[tokio::test]
     async fn generate_reports_setup_when_unconfigured() {
         let cfg = ImageGenConfig { binary_path: "/no/sd".into(), model_path: "/no/m.gguf".into(), ..Default::default() };
-        let err = generate(&cfg, "a cat", None, 512, 4, None).await.unwrap_err();
+        let err = generate(&cfg, "a cat", None, 512, 4, None, None, None, None).await.unwrap_err();
         assert!(err.contains("Image generation isn't set up") || err.contains("No image model"));
     }
 

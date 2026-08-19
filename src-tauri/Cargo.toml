@@ -30,6 +30,8 @@ urlencoding = "2"
 anyhow = "1"
 tauri-plugin-dialog = "2.7.0"
 tauri-plugin-window-state = "2"
+imagesize = "0.13"  # read image WxH without decoding, for img2img output sizing
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }  # mask rasterize + inpaint composite
 dirs = "6.0.0"
 pdf-extract = "0.12"
 base64 = "0.22"

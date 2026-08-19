@@ -72,6 +72,10 @@ pub struct AppState {
     /// Count of images generated this turn — gives each a stable name (generated_image_N.png) the
     /// model can reference in run_python / a deck. Reset at the start of the agent loop.
     pub turn_image_count: Mutex<u32>,
+    /// User-brushed edit masks for this turn's attached images: (image basename → mask PNG bytes,
+    /// white = edit). Set by `send_message` from the frontend; read by the generate_image dispatch
+    /// so "edit the part I painted" inpaints exactly that region. Overwritten each send.
+    pub attachment_masks: Mutex<Vec<(String, Vec<u8>)>>,
     /// Persistent sysinfo handle for the Usage panel's Live tab — kept between polls so CPU% is a
     /// real delta over the poll interval rather than a cold-start zero.
     pub sys: Mutex<sysinfo::System>,
@@ -135,6 +139,7 @@ impl Default for AppState {
             image_model_download_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             turn_tokens: Mutex::new((0, 0)),
             turn_image_count: Mutex::new(0),
+            attachment_masks: Mutex::new(Vec::new()),
             sys: Mutex::new(sysinfo::System::new()),
             apps_allowed: Mutex::new(std::collections::HashSet::new()),
             pending_app_approval: Mutex::new(None),
@@ -352,6 +357,10 @@ pub struct SendMessageArgs {
     pub api_key: Option<String>,
     #[serde(default)]
     pub image_paths: Vec<String>,
+    /// Optional user-brushed edit mask per attached image, aligned to `image_paths` (a
+    /// `data:image/png;base64,…` string, or "" for none). White = the region to edit.
+    #[serde(default)]
+    pub image_masks: Vec<String>,
     /// Non-image files the user attached. The run_python sandbox is allowed to
     /// read/write these even if they fall outside the configured allowed dirs.
     #[serde(default)]
@@ -427,6 +436,23 @@ async fn send_message(
     // Reset the per-turn token accumulator (the stream parser sums into it; the frontend reads it
     // back via record_turn_usage when the turn ends).
     *state.turn_tokens.lock().unwrap() = (0, 0);
+
+    // Stash any user-brushed edit masks, keyed by the attached image's basename, so the
+    // generate_image dispatch can inpaint exactly the painted region. Aligned to image_paths.
+    {
+        use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+        let mut masks = Vec::new();
+        for (i, data) in args.image_masks.iter().enumerate() {
+            let b64 = data.rsplit(',').next().unwrap_or("");
+            if b64.is_empty() { continue; }
+            if let (Some(path), Ok(bytes)) = (args.image_paths.get(i), B64.decode(b64)) {
+                if let Some(name) = std::path::Path::new(path).file_name().and_then(|n| n.to_str()) {
+                    masks.push((name.to_string(), bytes));
+                }
+            }
+        }
+        *state.attachment_masks.lock().unwrap() = masks;
+    }
 
     {
         // Base64-encode any attached images for vision models
@@ -591,7 +617,15 @@ async fn send_message(
         sparql_snapshot,
         &state.mcp_connections,
         allowed_dirs_snapshot,
-        args.file_paths.clone(), // sandbox may read/write attached files
+        {
+            // The sandbox may read/write attached files. Attached IMAGES are included too (in
+            // addition to being base64'd for vision above) so they stage into /work/uploads and
+            // run_python (Pillow) can open/edit the actual pixels — otherwise the model has no path
+            // to the photo and loops searching the user's folders for it.
+            let mut p = args.file_paths.clone();
+            p.extend(args.image_paths.iter().cloned());
+            p
+        },
         args.web_search_results,
         args.tool_result_limit.unwrap_or(0), // 0 → default
         &app,

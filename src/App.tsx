@@ -15,6 +15,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { DebugPanel } from "./DebugPanel";
 import { UsageRail, UsageHistoryModal } from "./UsagePanel";
+import { MaskEditor } from "./MaskEditor";
 import { HistoryPanel, ConversationMeta } from "./HistoryPanel";
 import "./App.css";
 
@@ -98,9 +99,9 @@ const ALL_BUILTIN_TOOLS: ToolSchema[] = [
   { type: "function", function: { name: "compose_email", description: "Build a base64url-encoded RFC 2822 email ready for the Gmail API. Returns ONLY the raw base64url string — use the entire return value as the 'raw' field in gmail_sendmessage, with no modification.", parameters: { type: "object", properties: { to: { type: "string", description: "Recipient email address(es), comma-separated." }, from: { type: "string", description: "Sender email address (optional)." }, subject: { type: "string", description: "Email subject line." }, body: { type: "string", description: "Plain text email body." }, reply_to_message_id: { type: "string", description: "Message-ID to reply to, for threading (optional)." } }, required: ["to","subject","body"] } } },
   { type: "function", function: { name: "fetch_webpage", description: "Fetch and read the full text content of a webpage by URL. Strips HTML and returns readable text. This is the correct tool whenever the user wants to see, read, open, or show an article or page — including the full article behind a web_search result (pass that result's URL). Do NOT refuse such requests or claim you can only summarise; call this tool instead. Also use it to read any specific URL the user provides.", parameters: { type: "object", properties: { url: { type: "string", description: "Full URL to fetch, must start with http:// or https://" } }, required: ["url"] } } },
   { type: "function", function: { name: "get_current_datetime", description: "Get the current local date and time. Returns human-readable, ISO 8601, filename-safe, and Unix timestamp formats. Use whenever you need today's date or a timestamp for a filename.", parameters: { type: "object", properties: {}, required: [] } } },
-  { type: "function", function: { name: "run_python", description: "Execute real Python (CPython) in a secure, offline sandbox to compute, analyse data, and CREATE CHARTS. The full standard library plus numpy, pandas, matplotlib, scipy, sympy, openpyxl (read/write Excel .xlsx), beautifulsoup4 (parse HTML), and geopandas with shapely & pyproj (geospatial — plot points/lines/polygons and choropleth MAPS as a matplotlib figure; note there is no online street/satellite basemap offline, so for a street-map backdrop use a connected map tool instead), and python-pptx (build editable PowerPoint .pptx decks — used by the 'presentation' skill) are available — import them normally. These are the ONLY third-party packages, and there is NO network access, so do not import anything else (e.g. requests, scikit-learn, plotly, contextily) — it will fail. Use print() for text output. Files live in a virtual workspace at /work/uploads/: the user's attached files are there — documents (PDF, Word) are ALREADY extracted to plain text, so just open() and read them (do NOT try to PDF-parse); data files (CSV, Excel, JSON) are as-is for pandas. SAVE any output (files, charts) to /work/out/ (kept for the user). Your /work files (and Python variables) PERSIST across run_python calls within the same turn — a chart PNG you saved in one call is still there in the next — and reset only when the user sends a new message. So you can build a task up across calls (e.g. generate chart PNGs in one call, then read them to build a PowerPoint in another). (For a plain read/summary of a document with no computation, prefer the read_file tool — no code or permission needed.) Use normal Python I/O — open(), pathlib, pd.read_csv('/work/uploads/data.csv'). TO SHOW A GRAPH, build a matplotlib figure (e.g. `import matplotlib.pyplot as plt; plt.plot(x, y)`) — it is rendered INLINE in the chat automatically — you do NOT need to save it (do NOT hand-draw ASCII or SVG). Only use plt.savefig('/work/out/name.png') if the user explicitly wants a saved file — /work/out is an in-memory scratch path, but anything you write there is copied to a real folder on the user's disk and the tool result reports that real absolute path. When telling the user where a file was saved, quote the real path from the tool result (the line marked SAVED TO DISK); NEVER tell the user the file is at /work/out (they cannot open that). No network access. Do not read/write paths outside /work.", parameters: { type: "object", properties: { code: { type: "string", description: "The Python source code to execute." } }, required: ["code"] } } },
+  { type: "function", function: { name: "run_python", description: "Execute real Python (CPython) in a secure, offline sandbox to compute, analyse data, and CREATE CHARTS. The full standard library plus numpy, pandas, matplotlib, scipy, sympy, openpyxl (read/write Excel .xlsx), beautifulsoup4 (parse HTML), and geopandas with shapely & pyproj (geospatial — plot points/lines/polygons and choropleth MAPS as a matplotlib figure; note there is no online street/satellite basemap offline, so for a street-map backdrop use a connected map tool instead), python-pptx (build editable PowerPoint .pptx decks — used by the 'presentation' skill), and Pillow/PIL (open, edit and save raster images — recolour, adjust, crop, resize, filter, composite/overlay, and draw shapes or text) are available — import them normally. These are the ONLY third-party packages, and there is NO network access, so do not import anything else (e.g. requests, scikit-learn, plotly, contextily) — it will fail. Use print() for text output. Files live in a virtual workspace at /work/uploads/: the user's attached files are there — documents (PDF, Word) are ALREADY extracted to plain text, so just open() and read them (do NOT try to PDF-parse); data files (CSV, Excel, JSON) are as-is for pandas. IMAGES the user attached are there too as REAL image files at /work/uploads/<filename> — to edit an attached photo, open it with Pillow (from PIL import Image; im = Image.open('/work/uploads/<name>')), make the change, and im.save('/work/out/<name>') — do NOT search the user's folders for it and do NOT claim you can't find it. (Note: Pillow does pixel/colour edits, not semantic object selection — to repaint a specific object like 'the building' while keeping the rest of the photo, use the generate_image tool's source_image edit mode instead.) SAVE any output (files, charts) to /work/out/ (kept for the user). Your /work files (and Python variables) PERSIST across run_python calls within the same turn — a chart PNG you saved in one call is still there in the next — and reset only when the user sends a new message. So you can build a task up across calls (e.g. generate chart PNGs in one call, then read them to build a PowerPoint in another). (For a plain read/summary of a document with no computation, prefer the read_file tool — no code or permission needed.) Use normal Python I/O — open(), pathlib, pd.read_csv('/work/uploads/data.csv'). TO SHOW A GRAPH, build a matplotlib figure (e.g. `import matplotlib.pyplot as plt; plt.plot(x, y)`) — it is rendered INLINE in the chat automatically — you do NOT need to save it (do NOT hand-draw ASCII or SVG). Only use plt.savefig('/work/out/name.png') if the user explicitly wants a saved file — /work/out is an in-memory scratch path, but anything you write there is copied to a real folder on the user's disk and the tool result reports that real absolute path. When telling the user where a file was saved, quote the real path from the tool result (the line marked SAVED TO DISK); NEVER tell the user the file is at /work/out (they cannot open that). No network access. Do not read/write paths outside /work.", parameters: { type: "object", properties: { code: { type: "string", description: "The Python source code to execute." } }, required: ["code"] } } },
   { type: "function", function: { name: "create_artifact", description: "Render a rich, self-contained HTML page inline in the chat, with a Save button (saves as a .html file the user can open in any browser). Use this for polished deliverables — formatted reports, dashboards, styled tables/cards, or simple interactive views — when plain markdown isn't enough. The HTML MUST be fully self-contained: inline all CSS in a <style> tag and any JS in a <script> tag; NO external URLs, fonts, images, or CDNs (they are blocked) — EXCEPT for maps, where you MAY load Leaflet from unpkg/jsdelivr and OpenStreetMap/Mapbox map tiles (use these to draw a street map with real data points). To include a chart, map or image you generated earlier THIS TURN (e.g. a matplotlib chart from run_python, a map, or a photo from generate_image — great for building an image slide deck), use the placeholder token as the image source: <img src=\"{{figure:1}}\"> for the first such image, {{figure:2}} for the second, and so on (in the order they were created) — LexiChat substitutes the real image. Do NOT paste base64 image data yourself. Any other images must be data: URIs. It renders in a sandboxed frame. Do NOT put your final prose answer inside the artifact — write a short summary in chat and put the rich content in the artifact. To show ANY HTML (a page, a map, a dashboard) you MUST call THIS tool with the HTML — NEVER paste raw HTML, a <script>, or an <iframe> into your chat reply, which renders as source text, not a page.", parameters: { type: "object", properties: { title: { type: "string", description: "Short title for the artifact (used as the saved filename and header)." }, html: { type: "string", description: "A complete, self-contained HTML document (or fragment) with all CSS/JS inlined and no external resources." } }, required: ["title", "html"] } } },
-  { type: "function", function: { name: "generate_image", description: "Generate an image from a text description using the local, offline image model (stable-diffusion). Use this whenever the user asks you to create, draw, generate, illustrate, paint, or make an image, picture, logo, or artwork. The generated image is displayed inline in the chat automatically — refer to it as \"shown above\"; do NOT output an image URL or a markdown image. To put generated images into a SLIDE DECK or document: embed each in a create_artifact HTML slide via its placeholder <img src=\"{{figure:N}}\"> (N = the order it was generated: 1, 2, …), OR read it in run_python from the path the tool result reports (/work/data/generated_image_N.png) and add it to a .pptx with python-pptx add_picture. You do NOT need to re-generate images to use them in a file — the tool result tells you their figure number and file path.", parameters: { type: "object", properties: { prompt: { type: "string", description: "A detailed description of the image to create — subject, style, colours, composition." }, negative_prompt: { type: "string", description: "Things to avoid in the image (optional)." }, size: { type: "integer", description: "Square image size in pixels, e.g. 512, 768, 1024 (optional)." }, steps: { type: "integer", description: "Sampling steps; Turbo models want ~4 (optional)." }, seed: { type: "integer", description: "Seed for reproducibility (optional)." } }, required: ["prompt"] } } },
+  { type: "function", function: { name: "generate_image", description: "Generate an image from a text description, OR edit an image the user attached, using the local offline image model (stable-diffusion). Use it whenever the user asks you to create, draw, generate, illustrate, paint, or make an image — and ALSO when they ask you to edit, restyle, or repaint an attached photo (e.g. 'make the building in this photo pink'): for that, pass source_image. The result is displayed inline automatically — refer to it as \"shown above\"; do NOT output an image URL or a markdown image. To put a result into a SLIDE DECK or document: embed it in a create_artifact HTML slide via its placeholder <img src=\"{{figure:N}}\"> (N = the order it was generated), OR read it in run_python from the path the tool result reports (/work/data/generated_image_N.png) and add it to a .pptx with python-pptx add_picture. You do NOT need to re-generate images to reuse them. Note: source_image edits the WHOLE image toward the prompt (image-to-image) — great for recolouring/restyling a scene or object while keeping the composition, but NOT pixel-exact; for precise deterministic edits (exact colour swap, crop, overlay text) use run_python with Pillow instead.", parameters: { type: "object", properties: { prompt: { type: "string", description: "A detailed description of the image to create — or, when editing, of the desired end result (describe the whole scene as it should look after the edit, e.g. 'a street with the foreground building painted pink')." }, negative_prompt: { type: "string", description: "Things to avoid in the image (optional)." }, source_image: { type: "string", description: "To EDIT an attached image instead of creating a new one: the /work/uploads/<filename> path of the image the user attached to this message. Omit to generate from scratch. Only attached images can be used." }, strength: { type: "number", description: "Edit strength for source_image, 0.0–1.0 (optional, default 0.6, or 0.85 with mask_regions). Lower stays closer to the original; higher diverges more. Ignored without source_image." }, mask_regions: { type: "string", description: "To change ONLY part of source_image and keep the rest pixel-identical (e.g. 'the building', 'the sky'): region(s) as normalized (0..1) shapes separated by ';' — 'rect x y w h' or 'ellipse cx cy rx ry'. Estimate the region from the image you can see, e.g. 'rect 0 0.35 0.45 0.65'. If the user painted a region on the image it is used automatically (omit this). Omit to edit the whole image." }, size: { type: "integer", description: "New images: square size in px (512/768/1024). When editing: caps the longer edge; original aspect ratio is kept (optional)." }, steps: { type: "integer", description: "Sampling steps; Turbo models want ~4 (optional)." }, seed: { type: "integer", description: "Seed for reproducibility (optional)." } }, required: ["prompt"] } } },
 ];
 
 // Built-in tools a chat gets when NO profile is active: read-only / no-side-effect only. Mutating
@@ -1471,6 +1472,10 @@ export default function App() {
     }
   };
   const [attachedFiles, setAttachedFiles] = useState<string[]>([]);
+  // Per-attached-image edit masks (image path → mask PNG data URL). Set via the brush editor; sent
+  // aligned to image_paths so the backend inpaints only the painted region.
+  const [imageMasks, setImageMasks] = useState<Record<string, string>>({});
+  const [maskEditorFor, setMaskEditorFor] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -2022,10 +2027,24 @@ export default function App() {
     // Split attachments into images (sent via Ollama images field) and other files (appended as paths)
     const imagePaths = attachedFiles.filter(isImage);
     const otherFiles = attachedFiles.filter(f => !isImage(f));
+    // Edit masks aligned to imagePaths ("" = none).
+    const imageMasksAligned = imagePaths.map(p => imageMasks[p] ?? "");
 
-    const fullText = otherFiles.length > 0
-      ? `${text}\n\nThe user has attached the following local file(s). Use the read_file tool to read them directly (it extracts text from PDF, Word, and plain text automatically). This IS the document the user is referring to — do NOT search or fetch the web for it:\n${otherFiles.map(f => `- ${f}`).join("\n")}`
-      : text;
+    const filesNote = otherFiles.length > 0
+      ? `\n\nThe user has attached the following local file(s). Use the read_file tool to read them directly (it extracts text from PDF, Word, and plain text automatically). This IS the document the user is referring to — do NOT search or fetch the web for it:\n${otherFiles.map(f => `- ${f}`).join("\n")}`
+      : "";
+
+    // Tell the model the sandbox path of each attached image so it can EDIT the real file instead of
+    // regenerating the scene. Without this the model only sees the pixels (via vision) and doesn't
+    // know the filename — it then says "I can't access the file" and reimagines from scratch.
+    const imageNote = imagePaths.length > 0
+      ? `\n\nThe user attached the image(s) shown to you, available in the sandbox at:\n${imagePaths.map(p => {
+          const uploaded = `/work/uploads/${p.split("/").pop()}`;
+          return `- ${uploaded}${imageMasks[p] ? "  (the user PAINTED the exact region to change — call generate_image with this as source_image and a prompt describing the change; the painted mask is applied automatically, so DO NOT set mask_regions)" : ""}`;
+        }).join("\n")}\nTo EDIT an attached image (recolour, restyle, or change part of it) call generate_image with source_image set to its path above (add mask_regions to change only part of it), or open it in run_python with Pillow for exact pixel edits. Do NOT say you cannot access the file and do NOT regenerate the scene from scratch when the user wants THIS image changed.`
+      : "";
+
+    const fullText = `${text}${filesNote}${imageNote}`;
 
     // Build display text — only list non-image attachments (images shown as thumbnails)
     const displayText = otherFiles.length > 0
@@ -2039,6 +2058,7 @@ export default function App() {
 
     setMessages(prev => [...prev, { id: uid(), role: "user", text: displayText, imageDataUrls }]);
     setAttachedFiles([]);
+    setImageMasks({});
     setInput("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
     // This run now owns the event stream (see streamEpoch/streamOwner).
@@ -2175,6 +2195,7 @@ export default function App() {
           api_key: targetServer?.apiKey ?? null,
           tools: enabledTools,
           image_paths: imagePaths,
+          image_masks: imageMasksAligned,
           file_paths: otherFiles,
           temperature: resolved.temperature,
           top_p: resolved.topP ?? null,
@@ -2508,7 +2529,16 @@ export default function App() {
                 <div key={f} className="attach-chip">
                   <Paperclip size={10} />
                   <span>{f.split("/").pop()}</span>
-                  <button onClick={() => setAttachedFiles(prev => prev.filter(p => p !== f))}>✕</button>
+                  {isImage(f) && (
+                    <button title="Mark a region to edit" onClick={() => setMaskEditorFor(f)}
+                      style={{ color: imageMasks[f] ? "var(--accent)" : undefined }}>
+                      {imageMasks[f] ? "✎ region" : "✎"}
+                    </button>
+                  )}
+                  <button onClick={() => {
+                    setAttachedFiles(prev => prev.filter(p => p !== f));
+                    setImageMasks(prev => { const n = { ...prev }; delete n[f]; return n; });
+                  }}>✕</button>
                 </div>
               ))}
             </div>
@@ -2574,6 +2604,18 @@ export default function App() {
       </div>{/* end main content row */}
 
       <UsageHistoryModal open={showUsageHistory} onClose={() => setShowUsageHistory(false)} />
+
+      {maskEditorFor && (
+        <MaskEditor
+          path={maskEditorFor}
+          onSave={(dataUrl) => setImageMasks(prev => {
+            const n = { ...prev };
+            if (dataUrl) n[maskEditorFor] = dataUrl; else delete n[maskEditorFor];
+            return n;
+          })}
+          onClose={() => setMaskEditorFor(null)}
+        />
+      )}
 
       {showAdmin && (
         <AdminPanel

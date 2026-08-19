@@ -2047,10 +2047,46 @@ async fn dispatch_tool<R: tauri::Runtime>(
         let size = args.get("size").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
         let steps = args.get("steps").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
         let seed = args.get("seed").and_then(|v| v.as_i64());
+        let strength = args.get("strength").and_then(|v| v.as_f64()).map(|s| s as f32);
+        // Optional img2img: the model passes source_image as the /work/uploads/<name> path (or bare
+        // filename) of an ATTACHED image. That virtual path doesn't exist on the real disk, so we
+        // resolve it by basename against the staged attachment paths to get the actual file.
+        let source_ref = args.get("source_image").and_then(|p| p.as_str())
+            .map(str::trim).filter(|s| !s.is_empty());
+        let source_real: Option<String> = source_ref.and_then(|r| {
+            let want = std::path::Path::new(r).file_name().and_then(|n| n.to_str())?.to_string();
+            sandbox_paths.iter().find(|p|
+                std::path::Path::new(p.as_str()).file_name().and_then(|n| n.to_str()) == Some(want.as_str())
+            ).cloned()
+        });
+        if source_ref.is_some() && source_real.is_none() {
+            return format!("Error: generate_image could not find an attached image matching \
+                source_image=\"{}\". Only images the user attached to THIS message can be edited — \
+                pass the exact /work/uploads/<filename> path shown for the attachment (or omit \
+                source_image to generate a brand-new image from the prompt).", source_ref.unwrap());
+        }
+        let editing = source_real.is_some();
+        // Optional inpaint mask: prefer a mask the USER brushed onto this attachment (stored in
+        // AppState by basename); else rasterize the model's `mask_regions` DSL against the source's
+        // real dimensions. Either way only the masked region changes and the rest is preserved.
+        let mask_png: Option<Vec<u8>> = source_real.as_ref().and_then(|src| {
+            let base = std::path::Path::new(src).file_name().and_then(|n| n.to_str())?.to_string();
+            // Tier 2 — user-brushed mask.
+            if let Some(s) = app.try_state::<crate::AppState>() {
+                if let Some((_, bytes)) = s.attachment_masks.lock().unwrap().iter().find(|(n, _)| n == &base) {
+                    return Some(bytes.clone());
+                }
+            }
+            // Tier 1 — model-drawn region DSL.
+            let dsl = args.get("mask_regions").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty())?;
+            let dim = imagesize::size(src).ok()?;
+            crate::image_gen::rasterize_mask(dsl, dim.width as u32, dim.height as u32)
+        });
+        let masked = mask_png.is_some();
         let cfg = app.try_state::<crate::AppState>()
             .map(|s| s.image_gen_config.lock().unwrap().clone())
             .unwrap_or_default();
-        return match crate::image_gen::generate(&cfg, &prompt, negative, size, steps, seed).await {
+        return match crate::image_gen::generate(&cfg, &prompt, negative, size, steps, seed, source_real.as_deref(), strength, mask_png.as_deref()).await {
             Ok(png) => {
                 let mut file_note = String::new();
                 if !silent {
@@ -2074,7 +2110,10 @@ async fn dispatch_tool<R: tauri::Runtime>(
                         }
                     }
                 }
-                format!("[Generated an image for the prompt \"{prompt}\". It is displayed inline to \
+                let verb = if masked { "Edited the selected region of the attached image (the rest is unchanged)" }
+                    else if editing { "Edited the attached image" }
+                    else { "Generated an image" };
+                format!("[{verb} for the prompt \"{prompt}\". It is displayed inline to \
                     the user above.{file_note} Refer to it naturally as \"shown above\"; do NOT output \
                     an image URL or markdown image, and do NOT claim you cannot show images.]")
             }
