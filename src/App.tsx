@@ -107,9 +107,13 @@ const ALL_BUILTIN_TOOLS: ToolSchema[] = [
 // Built-in tools a chat gets when NO profile is active: read-only / no-side-effect only. Mutating
 // file tools, email, code execution, and all registered OpenAPI/MCP/SPARQL integrations require an
 // explicit profile. (Product decision — the no-profile default must not expose everything.)
+// create_artifact is included: it only renders self-contained HTML in a sandboxed frame (no disk,
+// network, or app access; the Save button is user-initiated), so a no-profile chat can still show an
+// inline report/deck/dashboard instead of silently falling back to a file-only result.
 const SAFE_DEFAULT_BUILTINS = new Set([
   "read_file", "list_files", "search_files", "search_in_files", "get_file_info",
   "list_directory_tree", "web_search", "fetch_webpage", "get_current_datetime",
+  "create_artifact",
 ]);
 
 const WIKI_TOOLS: ToolSchema[] = [
