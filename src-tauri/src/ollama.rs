@@ -323,6 +323,9 @@ fn build_chat_request(
                 "messages": to_openai_messages(messages),
                 "stream": stream,
             });
+            // Ask for token usage in the stream — OpenAI-compatible servers only include a final
+            // `usage` chunk when this is set. Harmless for servers that ignore it.
+            if stream { b["stream_options"] = json!({ "include_usage": true }); }
             if !tools.is_empty() { b["tools"] = json!(tools); }
             if let Some(o) = options { apply_openai_options(&mut b, o); }
             // Anthropic's compat endpoint requires max_tokens; default it when the caller didn't set
@@ -510,6 +513,19 @@ fn parse_openai_line<R: tauri::Runtime>(
             let f = &tc["function"];
             if let Some(n) = f["name"].as_str() { if !n.is_empty() { slot.name.push_str(n); } }
             if let Some(a) = f["arguments"].as_str() { slot.args.push_str(a); }
+        }
+    }
+    // Final usage chunk (present when stream_options.include_usage was set — OpenAI, Anthropic
+    // compat, Groq, Together, OpenRouter, …). Accumulate into the per-turn token total, exactly
+    // like the Ollama path, so the DebugPanel/usage counts work for cloud models too.
+    if let Some(u) = v.get("usage").filter(|u| u.is_object()) {
+        let p = u["prompt_tokens"].as_u64().unwrap_or(0);
+        let c = u["completion_tokens"].as_u64().unwrap_or(0);
+        if p > 0 || c > 0 {
+            if let Some(s) = app.try_state::<crate::AppState>() {
+                let mut t = s.turn_tokens.lock().unwrap();
+                t.0 += p; t.1 += c;
+            }
         }
     }
     Ok(())
