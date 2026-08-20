@@ -141,6 +141,10 @@ pub struct RetryEvent {
 // Debug events
 #[derive(Clone, Serialize)]
 pub struct DebugStepEvent {
+    /// Unique per-agent-loop id so the DebugPanel groups steps into the correct run even when two
+    /// runs overlap (e.g. a dev-control run during a chat) — without it, interleaved events merge
+    /// into one run and steps appear out of order.
+    pub run_id: u64,
     pub step: usize,
     pub schema_names: Vec<String>,
     /// Total candidate tools (always-on + all groups) before per-step narrowing. When larger
@@ -150,15 +154,23 @@ pub struct DebugStepEvent {
 
 #[derive(Clone, Serialize)]
 pub struct DebugStepDoneEvent {
+    pub run_id: u64,
     pub step: usize,
     pub llm_text: String,
     pub duration_ms: u64,
+    /// Prompt (input) and completion (output) tokens for THIS step's model call (Ollama counts).
+    pub tokens_in: u64,
+    pub tokens_out: u64,
 }
 
 #[derive(Clone, Serialize)]
 pub struct DebugRunDoneEvent {
+    pub run_id: u64,
     pub total_ms: u64,
     pub error: Option<String>,
+    /// Total prompt/completion tokens across all of this run's steps.
+    pub tokens_in: u64,
+    pub tokens_out: u64,
 }
 
 // ── Chat parameter options ────────────────────────────────────────────────────
@@ -1265,6 +1277,29 @@ pub async fn agent_loop<R: tauri::Runtime>(
 ) -> anyhow::Result<()> {
     use std::sync::atomic::Ordering;
     let run_start = std::time::Instant::now();
+    // Unique id for this agent-loop invocation — stamped on every debug event so the trace groups
+    // steps into the right run and closes the right run, even if two runs overlap.
+    static DEBUG_RUN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let run_id = DEBUG_RUN_SEQ.fetch_add(1, Ordering::Relaxed);
+    // Read the turn's cumulative (prompt, completion) token counts (accumulated by the stream parser
+    // into AppState). Used for per-step deltas and the per-run total shown in the DebugPanel.
+    let read_tokens = || -> (u64, u64) {
+        app.try_state::<crate::AppState>()
+            .map(|s| *s.turn_tokens.lock().unwrap())
+            .unwrap_or((0, 0))
+    };
+    // Emit debug-run-done with the run id + running token totals (no-op for silent job runs).
+    let emit_run_done = |error: Option<String>| {
+        if silent { return; }
+        let (tokens_in, tokens_out) = read_tokens();
+        let _ = app.emit("debug-run-done", DebugRunDoneEvent {
+            run_id,
+            total_ms: run_start.elapsed().as_millis() as u64,
+            error,
+            tokens_in,
+            tokens_out,
+        });
+    };
     let mut nudged = false;
     let mut continuations = 0usize;
     let mut consecutive_text_without_tools = 0usize; // detect "I'm done" loops
@@ -1388,10 +1423,7 @@ pub async fn agent_loop<R: tauri::Runtime>(
         if cancel.load(Ordering::SeqCst) {
             if !silent {
                 let _ = app.emit("agent-done", DoneEvent { error: None });
-                let _ = app.emit("debug-run-done", DebugRunDoneEvent {
-                    total_ms: run_start.elapsed().as_millis() as u64,
-                    error: None,
-                });
+                emit_run_done(None);
             }
             return Ok(());
         }
@@ -1409,8 +1441,7 @@ pub async fn agent_loop<R: tauri::Runtime>(
                         options.as_ref(), keep_alive.as_deref(), app).await;
                 }
                 let _ = app.emit("agent-done", DoneEvent { error: None });
-                let _ = app.emit("debug-run-done", DebugRunDoneEvent {
-                    total_ms: run_start.elapsed().as_millis() as u64, error: None });
+                emit_run_done(None);
             }
             return Ok(());
         }
@@ -1462,9 +1493,11 @@ pub async fn agent_loop<R: tauri::Runtime>(
         let schema_names: Vec<String> = tools.iter().map(|t| t.function.name.clone()).collect();
         if !silent {
             let _ = app.emit("debug-step-start", DebugStepEvent {
-                step, schema_names, candidate_total: always_tools.len() + discoverable_total,
+                run_id, step, schema_names, candidate_total: always_tools.len() + discoverable_total,
             });
         }
+        // Token counts at the start of this step, so the step's own usage is the delta at step-done.
+        let tok_before = read_tokens();
 
         // Build wire messages: system + history
         let mut wire = {
@@ -1532,10 +1565,7 @@ pub async fn agent_loop<R: tauri::Runtime>(
                 Err(e) => {
                     if !silent {
                         let _ = app.emit("agent-done", DoneEvent { error: Some(e.to_string()) });
-                        let _ = app.emit("debug-run-done", DebugRunDoneEvent {
-                            total_ms: run_start.elapsed().as_millis() as u64,
-                            error: Some(e.to_string()),
-                        });
+                        emit_run_done(Some(e.to_string()));
                     }
                     return Err(e);
                 }
@@ -1544,10 +1574,14 @@ pub async fn agent_loop<R: tauri::Runtime>(
 
         let step_ms = step_start.elapsed().as_millis() as u64;
         if !silent {
+            let (tp, tc) = read_tokens();
             let _ = app.emit("debug-step-done", DebugStepDoneEvent {
+                run_id,
                 step,
                 llm_text: full_text.clone(),
                 duration_ms: step_ms,
+                tokens_in: tp.saturating_sub(tok_before.0),
+                tokens_out: tc.saturating_sub(tok_before.1),
             });
         }
 
@@ -1636,10 +1670,7 @@ pub async fn agent_loop<R: tauri::Runtime>(
                     }
                 }
                 let _ = app.emit("agent-done", DoneEvent { error: None });
-                let _ = app.emit("debug-run-done", DebugRunDoneEvent {
-                    total_ms: run_start.elapsed().as_millis() as u64,
-                    error: None,
-                });
+                emit_run_done(None);
             }
             return Ok(());
         }
@@ -1681,8 +1712,7 @@ pub async fn agent_loop<R: tauri::Runtime>(
                         options.as_ref(), keep_alive.as_deref(), app).await;
                 }
                 let _ = app.emit("agent-done", DoneEvent { error: None });
-                let _ = app.emit("debug-run-done", DebugRunDoneEvent {
-                    total_ms: run_start.elapsed().as_millis() as u64, error: None });
+                emit_run_done(None);
             }
             return Ok(());
         }
@@ -1945,10 +1975,7 @@ pub async fn agent_loop<R: tauri::Runtime>(
                 options.as_ref(), keep_alive.as_deref(), app).await;
         }
         let _ = app.emit("agent-done", DoneEvent { error: Some(msg.clone()) });
-        let _ = app.emit("debug-run-done", DebugRunDoneEvent {
-            total_ms: run_start.elapsed().as_millis() as u64,
-            error: Some(msg),
-        });
+        emit_run_done(Some(msg));
     }
     Ok(())
 }

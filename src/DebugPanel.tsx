@@ -9,6 +9,8 @@ interface DebugStep {
   candidateTotal?: number;
   llmText?: string;
   durationMs?: number;
+  tokensIn?: number;
+  tokensOut?: number;
   toolCalls: { name: string; args: string }[];
   toolResults: { name: string; result: string }[];
   tokens: string;
@@ -16,11 +18,26 @@ interface DebugStep {
 }
 
 interface DebugRun {
-  id: number;
+  id: number;        // display number (RUN #N)
+  runId: number;     // backend agent-loop id — groups events to the right run
   steps: DebugStep[];
   totalMs?: number;
+  tokensIn?: number;
+  tokensOut?: number;
   error?: string;
   done: boolean;
+}
+
+const fmtTok = (n?: number) => (n ?? 0).toLocaleString();
+// token badge (in ↑ / out ↓) shown on a run header or step row
+function TokenBadge({ tin, tout }: { tin?: number; tout?: number }) {
+  if ((tin ?? 0) === 0 && (tout ?? 0) === 0) return null;
+  return (
+    <span title={`${fmtTok(tin)} input (prompt) / ${fmtTok(tout)} output (completion) tokens`}
+      style={{ fontSize: 9.5, color: "var(--purple)", fontVariantNumeric: "tabular-nums" }}>
+      {fmtTok(tin)} in · {fmtTok(tout)} out
+    </span>
+  );
 }
 
 // ── Step row ──────────────────────────────────────────────────────────────────
@@ -48,9 +65,12 @@ function StepRow({ step, isLast }: { step: DebugStep; isLast: boolean }) {
             {step.toolCalls.length} tool{step.toolCalls.length > 1 ? "s" : ""}
           </span>
         )}
-        {step.durationMs !== undefined && (
-          <span style={{ fontSize: 10, opacity: 0.45, marginLeft: "auto" }}>{step.durationMs}ms</span>
-        )}
+        <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+          <TokenBadge tin={step.tokensIn} tout={step.tokensOut} />
+          {step.durationMs !== undefined && (
+            <span style={{ fontSize: 10, color: "var(--purple)" }}>{step.durationMs}ms</span>
+          )}
+        </span>
       </button>
 
       {open && (
@@ -172,15 +192,18 @@ function RunRow({ run }: { run: DebugRun }) {
         {run.done && !run.error && (
           <span style={{ fontSize: 10, color: "#4ade80" }}>✓ done</span>
         )}
-        {run.totalMs !== undefined && (
-          <span style={{ fontSize: 10, opacity: 0.4, marginLeft: "auto" }}>{run.totalMs}ms</span>
-        )}
+        <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+          <TokenBadge tin={run.tokensIn} tout={run.tokensOut} />
+          {run.totalMs !== undefined && (
+            <span style={{ fontSize: 10, color: "var(--purple)" }}>{run.totalMs}ms</span>
+          )}
+        </span>
       </button>
 
       {open && (
         <div style={{ paddingLeft: 8, paddingTop: 4 }}>
-          {run.steps.map((step, i) => (
-            <StepRow key={step.index} step={step} isLast={i === run.steps.length - 1} />
+          {[...run.steps].sort((a, b) => a.index - b.index).map((step, i, arr) => (
+            <StepRow key={step.index} step={step} isLast={i === arr.length - 1} />
           ))}
           {run.error && (
             <div style={{ fontSize: 11, color: "#f87171", padding: "4px 8px" }}>
@@ -206,6 +229,7 @@ export function DebugPanel({ visible, clearKey }: Props) {
   const [runs, setRuns] = useState<DebugRun[]>([]);
   const [bridge, setBridge] = useState<BridgeMsg[]>([]);
   const runCounter = useRef(0);
+  const activeRunId = useRef(0); // backend run_id of the step currently streaming (for content events)
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -232,133 +256,76 @@ export function DebugPanel({ visible, clearKey }: Props) {
     const unsubs: UnlistenFn[] = [];
 
     const setup = async () => {
-      // New step starting
-      unsubs.push(await listen<{ step: number; schema_names: string[]; candidate_total?: number }>("debug-step-start", ({ payload }) => {
-        if (payload.step === 0) {
-          // New run
-          runCounter.current += 1;
-          const runId = runCounter.current;
-          setRuns(prev => [...prev, {
-            id: runId, steps: [{
-              index: 0,
-              schemaNames: payload.schema_names,
-              candidateTotal: payload.candidate_total,
-              toolCalls: [], toolResults: [], tokens: "", thinking: "",
-            }], done: false,
-          }]);
-        } else {
-          setRuns(prev => {
-            if (prev.length === 0) return prev;
-            const runs = [...prev];
-            const run = { ...runs[runs.length - 1] };
-            run.steps = [...run.steps, {
-              index: payload.step,
-              schemaNames: payload.schema_names,
-              candidateTotal: payload.candidate_total,
-              toolCalls: [], toolResults: [], tokens: "", thinking: "",
-            }];
-            runs[runs.length - 1] = run;
-            return runs;
-          });
-        }
-      }));
-
-      // Thinking tokens
-      unsubs.push(await listen<{ delta: string }>("agent-thinking", ({ payload }) => {
+      // Update a run identified by its backend run_id (immutably).
+      const updateRun = (runId: number, fn: (run: DebugRun) => DebugRun) =>
         setRuns(prev => {
-          if (prev.length === 0) return prev;
-          const runs = [...prev];
-          const run = { ...runs[runs.length - 1] };
-          if (run.steps.length === 0) return prev;
-          const steps = [...run.steps];
-          const last = { ...steps[steps.length - 1] };
-          last.thinking = (last.thinking || "") + payload.delta;
-          steps[steps.length - 1] = last;
-          run.steps = steps;
-          runs[runs.length - 1] = run;
-          return runs;
+          const i = prev.findIndex(r => r.runId === runId);
+          if (i < 0) return prev;
+          const next = [...prev];
+          next[i] = fn({ ...next[i], steps: [...next[i].steps] });
+          return next;
         });
-      }));
 
-      // Streaming tokens
-      unsubs.push(await listen<{ delta: string }>("agent-token", ({ payload }) => {
+      // Content events (tokens/thinking/tool calls) carry no run_id — attach them to the step
+      // currently streaming: the last step of the active run (else the last run that isn't done).
+      const updateActiveStep = (fn: (s: DebugStep) => void) =>
         setRuns(prev => {
-          if (prev.length === 0) return prev;
-          const runs = [...prev];
-          const run = { ...runs[runs.length - 1] };
-          if (run.steps.length === 0) return prev;
-          const steps = [...run.steps];
-          const last = { ...steps[steps.length - 1] };
-          last.tokens = (last.tokens || "") + payload.delta;
-          steps[steps.length - 1] = last;
-          run.steps = steps;
-          runs[runs.length - 1] = run;
-          return runs;
+          let idx = prev.findIndex(r => r.runId === activeRunId.current && !r.done);
+          if (idx < 0) for (let k = prev.length - 1; k >= 0; k--) { if (!prev[k].done) { idx = k; break; } }
+          if (idx < 0 || prev[idx].steps.length === 0) return prev;
+          const run = { ...prev[idx], steps: [...prev[idx].steps] };
+          const last = { ...run.steps[run.steps.length - 1] };
+          fn(last);
+          run.steps[run.steps.length - 1] = last;
+          const next = [...prev]; next[idx] = run; return next;
         });
-      }));
 
-      // Step done
-      unsubs.push(await listen<{ step: number; llm_text: string; duration_ms: number }>("debug-step-done", ({ payload }) => {
+      // New step starting — create the run on first sight of its run_id, else append the step.
+      unsubs.push(await listen<{ run_id: number; step: number; schema_names: string[]; candidate_total?: number }>("debug-step-start", ({ payload }) => {
+        activeRunId.current = payload.run_id;
+        const newStep: DebugStep = {
+          index: payload.step, schemaNames: payload.schema_names, candidateTotal: payload.candidate_total,
+          toolCalls: [], toolResults: [], tokens: "", thinking: "",
+        };
         setRuns(prev => {
-          if (prev.length === 0) return prev;
-          const runs = [...prev];
-          const run = { ...runs[runs.length - 1] };
-          const steps = [...run.steps];
-          const idx = steps.findIndex(s => s.index === payload.step);
-          if (idx >= 0) {
-            steps[idx] = { ...steps[idx], llmText: payload.llm_text, durationMs: payload.duration_ms, tokens: "" };
+          const i = prev.findIndex(r => r.runId === payload.run_id);
+          if (i < 0) {
+            runCounter.current += 1;
+            return [...prev, { id: runCounter.current, runId: payload.run_id, steps: [newStep], done: false }];
           }
-          run.steps = steps;
-          runs[runs.length - 1] = run;
-          return runs;
+          const run = { ...prev[i], steps: [...prev[i].steps] };
+          if (!run.steps.some(s => s.index === payload.step)) run.steps.push(newStep);
+          const next = [...prev]; next[i] = run; return next;
         });
       }));
 
-      // Tool call
-      unsubs.push(await listen<{ name: string; args: string }>("agent-tool-call", ({ payload }) => {
-        setRuns(prev => {
-          if (prev.length === 0) return prev;
-          const runs = [...prev];
-          const run = { ...runs[runs.length - 1] };
-          const steps = [...run.steps];
-          const last = { ...steps[steps.length - 1] };
-          last.toolCalls = [...last.toolCalls, { name: payload.name, args: payload.args }];
-          steps[steps.length - 1] = last;
-          run.steps = steps;
-          runs[runs.length - 1] = run;
-          return runs;
-        });
-      }));
+      unsubs.push(await listen<{ delta: string }>("agent-thinking", ({ payload }) =>
+        updateActiveStep(s => { s.thinking = (s.thinking || "") + payload.delta; })));
 
-      // Tool result
-      unsubs.push(await listen<{ name: string; result: string }>("agent-tool-result", ({ payload }) => {
-        setRuns(prev => {
-          if (prev.length === 0) return prev;
-          const runs = [...prev];
-          const run = { ...runs[runs.length - 1] };
-          const steps = [...run.steps];
-          const last = { ...steps[steps.length - 1] };
-          last.toolResults = [...last.toolResults, { name: payload.name, result: payload.result }];
-          steps[steps.length - 1] = last;
-          run.steps = steps;
-          runs[runs.length - 1] = run;
-          return runs;
-        });
-      }));
+      unsubs.push(await listen<{ delta: string }>("agent-token", ({ payload }) =>
+        updateActiveStep(s => { s.tokens = (s.tokens || "") + payload.delta; })));
 
-      // Run done
-      unsubs.push(await listen<{ total_ms: number; error?: string }>("debug-run-done", ({ payload }) => {
-        setRuns(prev => {
-          if (prev.length === 0) return prev;
-          const runs = [...prev];
-          const run = { ...runs[runs.length - 1] };
-          run.done = true;
-          run.totalMs = payload.total_ms;
-          run.error = payload.error;
-          runs[runs.length - 1] = run;
-          return runs;
-        });
-      }));
+      unsubs.push(await listen<{ name: string; args: string }>("agent-tool-call", ({ payload }) =>
+        updateActiveStep(s => { s.toolCalls = [...s.toolCalls, { name: payload.name, args: payload.args }]; })));
+
+      unsubs.push(await listen<{ name: string; result: string }>("agent-tool-result", ({ payload }) =>
+        updateActiveStep(s => { s.toolResults = [...s.toolResults, { name: payload.name, result: payload.result }]; })));
+
+      // Step done — match by run_id + step index; record duration and per-step tokens.
+      unsubs.push(await listen<{ run_id: number; step: number; llm_text: string; duration_ms: number; tokens_in: number; tokens_out: number }>("debug-step-done", ({ payload }) =>
+        updateRun(payload.run_id, run => {
+          const j = run.steps.findIndex(s => s.index === payload.step);
+          if (j >= 0) run.steps[j] = { ...run.steps[j], llmText: payload.llm_text, durationMs: payload.duration_ms, tokensIn: payload.tokens_in, tokensOut: payload.tokens_out, tokens: "" };
+          return run;
+        })));
+
+      // Run done — close the CORRECT run (by id) with its total time + tokens.
+      unsubs.push(await listen<{ run_id: number; total_ms: number; error?: string; tokens_in: number; tokens_out: number }>("debug-run-done", ({ payload }) =>
+        updateRun(payload.run_id, run => {
+          run.done = true; run.totalMs = payload.total_ms; run.error = payload.error;
+          run.tokensIn = payload.tokens_in; run.tokensOut = payload.tokens_out;
+          return run;
+        })));
     };
 
     setup();
