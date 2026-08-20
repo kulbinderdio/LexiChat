@@ -250,6 +250,14 @@ text-only deck — design it.
    sees and judges, so make it look good).
 2. An **editable PowerPoint** saved to `/work/out` via `run_python` + `python-pptx`, themed to match.
 
+**Be efficient — decks are token-heavy and a local model is slow.** Write the slide content from what
+you already know; do NOT `web_search`/`fetch_webpage` unless the user explicitly wants researched or
+cited facts. Build the .pptx in a SINGLE `run_python` call (not several). Keep to 5–8 slides.
+
+**Attached images (e.g. a logo):** to place an image the USER ATTACHED on the slides, use its
+`{{upload:N}}` token (N = attachment order) in the inline HTML deck, and its `/work/uploads/<name>`
+path for `add_picture` in the .pptx. (`{{figure:N}}` is only for images you GENERATED this turn.)
+
 ## Step 1 — Plan
 Outline first: a cover slide, then ONE idea per slide (5–8 slides is ideal). Put the takeaway in the
 slide title ("Sales doubled in Q3", not "Q3 sales"). 3–6 short bullets per slide, never a wall of
@@ -278,46 +286,42 @@ show as broken squares.
   *files* do persist, so a follow-up .pptx can still `add_picture` them — but the inline deck cannot
   see them.) Budget your steps: generate every image, then immediately assemble both deliverables.
 
-## Step 3 — Inline styled deck (create_artifact)
-Call `create_artifact` with a COMPLETE self-contained HTML document based on this template. It's a
-real deck: 16:9, arrow-key / click / dot navigation, a theme colour, clean type. Fill in the slides,
-change `--accent`, keep everything inline (no external URLs).
+## Step 3 — Inline scrollable deck (create_artifact)
+Call `create_artifact` with a COMPLETE self-contained HTML document based on this template. The inline
+deck is a SCROLLABLE stack of slide CARDS — every slide is a 16:9 card, one below the next, so ALL
+slides are visible by scrolling the preview (do NOT build a one-at-a-time slideshow that hides slides
+behind navigation — in the small embedded frame that looks like only one slide exists). Add one
+`<section class="slide">` per slide, change `--accent`, keep everything inline (no external URLs).
 
 ```html
 <!doctype html><html><head><meta charset="utf-8"><style>
-:root{--accent:#4f46e5;--bg:#0f172a;--fg:#f8fafc;--muted:#94a3b8}
-*{box-sizing:border-box;margin:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#000}
-.deck{position:relative;width:100vw;height:100vh;overflow:hidden}
-.slide{position:absolute;inset:0;display:none;flex-direction:column;justify-content:center;padding:9vh 9vw;background:var(--bg);color:var(--fg)}
-.slide.on{display:flex;animation:f .35s ease}
-@keyframes f{from{opacity:0;transform:translateY(14px)}to{opacity:1}}
-.slide h1{font-size:5.5vw;line-height:1.05;letter-spacing:-.02em}
-.slide h2{font-size:3vw;color:var(--accent);margin-bottom:3vh;letter-spacing:-.01em}
-.slide .sub{font-size:1.9vw;color:var(--muted);margin-top:2.5vh}
-.slide ul{font-size:2.1vw;line-height:1.75;list-style:none}
-.slide li{position:relative;padding-left:1.4em;margin:.35em 0}
+:root{--accent:#4f46e5;--bg:#ffffff;--fg:#0f172a;--muted:#64748b;--edge:#e2e8f0}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;background:#eef1f6;padding:20px}
+.deck{max-width:960px;margin:0 auto;display:flex;flex-direction:column;gap:20px}
+.slide{position:relative;aspect-ratio:16/9;background:var(--bg);color:var(--fg);border:1px solid var(--edge);border-radius:16px;box-shadow:0 6px 22px rgba(15,23,42,.08);padding:6% 7%;display:flex;flex-direction:column;justify-content:center;overflow:hidden}
+.slide h1{font-size:clamp(26px,5vw,50px);line-height:1.08;letter-spacing:-.02em;font-weight:800}
+.slide h2{font-size:clamp(19px,3.2vw,31px);color:var(--accent);margin-bottom:.55em;letter-spacing:-.01em;font-weight:700}
+.slide .sub{font-size:clamp(14px,1.9vw,20px);color:var(--muted);margin-top:.8em}
+.slide ul{font-size:clamp(15px,2vw,22px);line-height:1.7;list-style:none;margin-top:.3em}
+.slide li{position:relative;padding-left:1.4em;margin:.32em 0}
 .slide li:before{content:'▸';position:absolute;left:0;color:var(--accent)}
-.slide img{max-width:100%;max-height:56vh;border-radius:12px;margin-top:2vh;align-self:center}
-.cover{background:linear-gradient(135deg,var(--bg),#1e1b4b)}.cover h1{font-size:7vw}
-.bar{position:absolute;top:0;left:0;height:8px;width:100%;background:var(--accent)}
-.num{position:absolute;bottom:3.5vh;right:4vw;color:var(--muted);font-size:1.3vw;font-variant-numeric:tabular-nums}
-#dots{position:absolute;bottom:3.5vh;left:4vw;display:flex;gap:9px;z-index:2}
-.dot{width:10px;height:10px;border-radius:50%;background:#334155;cursor:pointer}.dot.on{background:var(--accent)}
+.slide img.figure{max-width:100%;max-height:52%;border-radius:10px;margin-top:.8em;align-self:center}
+.cover{background:linear-gradient(135deg,#eef2ff,#ffffff)}
+.cover h1{font-size:clamp(32px,6.5vw,62px)}
+.bar{position:absolute;top:0;left:0;height:6px;width:100%;background:var(--accent);border-radius:16px 16px 0 0}
+.logo{position:absolute;top:6%;right:6%;height:14%;max-height:60px;width:auto;border-radius:8px}
+.pg{position:absolute;bottom:5.5%;right:6%;color:var(--muted);font-size:clamp(11px,1.2vw,14px);font-variant-numeric:tabular-nums}
 </style></head><body>
-<div class="deck" id="deck">
-  <section class="slide cover on"><h1>Deck title</h1><div class="sub">Subtitle · author · date</div></section>
-  <section class="slide"><div class="bar"></div><h2>Takeaway heading</h2><ul><li>Point one</li><li>Point two</li><li>Point three</li></ul><div class="num"></div></section>
-  <section class="slide"><div class="bar"></div><h2>A chart slide</h2><img src="{{figure:1}}"><div class="num"></div></section>
+<!-- Slides are CARDS stacked vertically — ALL visible by scrolling; no navigation JS. One <section
+     class="slide"> per slide. Optional per-slide logo from an ATTACHED image:
+     <img class="logo" src="{{upload:1}}">. Charts/generated photos: <img class="figure" src="{{figure:N}}">. -->
+<div class="deck">
+  <section class="slide cover"><h1>Deck title</h1><div class="sub">Subtitle · author · date</div><div class="pg">1 / 5</div></section>
+  <section class="slide"><div class="bar"></div><h2>Takeaway heading</h2><ul><li>Point one</li><li>Point two</li><li>Point three</li></ul><div class="pg">2 / 5</div></section>
+  <section class="slide"><div class="bar"></div><h2>A chart slide</h2><img class="figure" src="{{figure:1}}"><div class="pg">3 / 5</div></section>
 </div>
-<div id="dots"></div>
-<script>
-const S=[...document.querySelectorAll('.slide')],D=document.getElementById('dots');let i=0;
-S.forEach((_,k)=>{const d=document.createElement('div');d.className='dot'+(k?'':' on');d.onclick=e=>{e.stopPropagation();go(k)};D.appendChild(d)});
-function go(n){i=(n+S.length)%S.length;S.forEach((el,k)=>el.classList.toggle('on',k===i));[...D.children].forEach((d,k)=>d.classList.toggle('on',k===i));S[i].querySelectorAll('.num').forEach(e=>e.textContent=(i+1)+' / '+S.length)}
-onkeydown=e=>{if(e.key==='ArrowRight'||e.key===' ')go(i+1);else if(e.key==='ArrowLeft')go(i-1)};
-document.getElementById('deck').onclick=()=>go(i+1);go(0);
-</script></body></html>
+</body></html>
 ```
 Design: confident cover title, generous whitespace, ≤6 bullets, prefer a chart or two-column layout
 over a text wall. If `create_artifact` isn't available, skip this step and still do the .pptx.
@@ -397,6 +401,10 @@ prs.save('/work/out/deck.pptx'); print('saved /work/out/deck.pptx')
 ## Rules
 - Show the inline deck AND save the .pptx. Quote the real saved path from the tool result — never
   tell the user the file is at /work/out (they can't open that).
+- When you describe the inline deck, say the slides are stacked and the user can SCROLL through
+  them. Do NOT tell the user to use arrow keys, click, or dot indicators — the deck has no such
+  navigation. Only mention images/logos you ACTUALLY placed in the HTML (never claim a logo is on
+  the slides unless you added one).
 - Parity: every chart/photo shown inline must ALSO be a picture slide in the .pptx (call
   `picture_slide(...)` for each). A .pptx that's missing the images the user saw inline is a bug.
 - One idea per slide, takeaway titles, ≤6 bullets, consistent colours/fonts. Design it; don't ship
