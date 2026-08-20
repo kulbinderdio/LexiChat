@@ -326,12 +326,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 Design: confident cover title, generous whitespace, ≤6 bullets, prefer a chart or two-column layout
 over a text wall. If `create_artifact` isn't available, skip this step and still do the .pptx.
 
-## Step 4 — Editable PowerPoint (run_python + python-pptx), THEMED (not plain)
-CRITICAL: EVERY image in your inline deck MUST also be embedded in the .pptx — add ONE picture slide
-per image with `add_picture` (the inline `{{figure:N}}` deck and the .pptx are built separately; the
-.pptx does NOT inherit them). Image files to embed: charts you `plt.savefig('/work/chartN.png')` this
-turn, and photos from `generate_image` at `/work/data/generated_image_N.png` (its tool result gave you
-that exact path). /work persists across calls this turn, so files saved earlier are still there.
+## Step 4 — Editable PowerPoint (run_python + python-pptx) — MUST MATCH THE INLINE DECK
+The .pptx and the inline deck must look like the SAME presentation: same LIGHT background, same indigo
+accent, and the SAME slides in the SAME order with the SAME content. Build every slide with the
+helpers below (`cover_slide`, `content_slide`, `picture_slide`) — do NOT hand-place textboxes at
+custom coordinates (that is what makes text overlap). The theme colours here already match the inline
+template's `--bg` / `--accent` / `--fg`; keep them in sync if you change the deck's accent.
+CRITICAL: every image in your inline deck MUST also be a `picture_slide` in the .pptx (the two are
+built separately — the .pptx does NOT inherit `{{figure:N}}`/`{{upload:N}}`). Image files: charts you
+`plt.savefig('/work/chartN.png')` this turn, photos from `generate_image` at
+`/work/data/generated_image_N.png`, and an attached logo/image at `/work/uploads/<name>`.
 ```python
 from pptx import Presentation
 from pptx.util import Inches, Pt, Emu
@@ -340,60 +344,63 @@ from pptx.enum.text import PP_ALIGN
 from PIL import Image
 import os
 
-ACCENT = RGBColor(0x4f, 0x46, 0xe5)   # match the deck's --accent
-BG     = RGBColor(0x0f, 0x17, 0x2a)
-FG     = RGBColor(0xf8, 0xfa, 0xfc)
+# Theme — keep in sync with the inline deck (LIGHT background, indigo accent).
+ACCENT  = RGBColor(0x4f,0x46,0xe5)
+BG      = RGBColor(0xff,0xff,0xff)   # slides are white, like the inline cards
+COVERBG = RGBColor(0xee,0xf2,0xff)   # soft indigo tint for the cover
+FG      = RGBColor(0x0f,0x17,0x2a)   # dark text on light
+MUTED   = RGBColor(0x64,0x74,0x8b)
 
-prs = Presentation()
-prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)   # 16:9
+prs = Presentation(); prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)  # 16:9
 W, H = prs.slide_width, prs.slide_height
 
-def fill(slide, rgb):
-    slide.background.fill.solid(); slide.background.fill.fore_color.rgb = rgb
+def _slide(bg=BG):
+    s = prs.slides.add_slide(prs.slide_layouts[6])
+    s.background.fill.solid(); s.background.fill.fore_color.rgb = bg
+    return s
 
-def accent_bar(slide):
-    b = slide.shapes.add_shape(1, 0, 0, W, Emu(90000)); b.fill.solid()
-    b.fill.fore_color.rgb = ACCENT; b.line.fill.background()
+def _bar(s):  # accent bar across the top, matching the inline card
+    b = s.shapes.add_shape(1, 0, 0, W, Emu(80000)); b.fill.solid()
+    b.fill.fore_color.rgb = ACCENT; b.line.fill.background(); b.shadow.inherit = False
 
-def textbox(slide, text, top, size, color, bold=False, align=PP_ALIGN.LEFT):
-    tb = slide.shapes.add_textbox(Inches(0.9), top, W - Inches(1.8), Inches(1)); tf = tb.text_frame; tf.word_wrap = True
+def _text(s, text, left, top, width, height, size, color, bold=False, align=PP_ALIGN.LEFT):
+    tf = s.shapes.add_textbox(left, top, width, height).text_frame; tf.word_wrap = True
     p = tf.paragraphs[0]; p.alignment = align; r = p.add_run(); r.text = text
     r.font.size = Pt(size); r.font.bold = bold; r.font.color.rgb = color; r.font.name = 'Calibri'
     return tf
 
-def picture_slide(path, title):
-    # Themed slide with the image fitted (aspect preserved) below the title. Skips a missing file
-    # loudly instead of crashing the whole deck.
+# --- Build slides ONLY with these; each lays out in its own non-overlapping region. ---
+def cover_slide(title, subtitle=''):
+    s = _slide(COVERBG); _bar(s)
+    _text(s, title, Inches(0.9), Inches(2.3), W-Inches(1.8), Inches(2.2), 46, FG, bold=True)
+    if subtitle: _text(s, subtitle, Inches(0.9), Inches(4.6), W-Inches(1.8), Inches(1), 22, MUTED)
+
+def content_slide(title, bullets):
+    s = _slide(); _bar(s)
+    _text(s, title, Inches(0.9), Inches(0.8), W-Inches(1.8), Inches(1.2), 30, ACCENT, bold=True)
+    tf = s.shapes.add_textbox(Inches(0.9), Inches(2.1), W-Inches(1.8), H-Inches(2.8)).text_frame
+    tf.word_wrap = True
+    for j, line in enumerate(bullets):
+        p = tf.paragraphs[0] if j == 0 else tf.add_paragraph()
+        r = p.add_run(); r.text = '▸  ' + line
+        r.font.size = Pt(20); r.font.color.rgb = FG; r.font.name = 'Calibri'; p.space_after = Pt(12)
+
+def picture_slide(path, title=''):
     if not os.path.exists(path):
-        print('WARNING: image not found, slide skipped:', path); return None
-    s = prs.slides.add_slide(prs.slide_layouts[6]); fill(s, BG); accent_bar(s)
-    textbox(s, title, Inches(0.6), 30, ACCENT, bold=True)
+        print('WARNING: image not found, slide skipped:', path); return
+    s = _slide(); _bar(s); top = Inches(0.9)
+    if title:
+        _text(s, title, Inches(0.9), Inches(0.8), W-Inches(1.8), Inches(1), 30, ACCENT, bold=True)
+        top = Inches(2.0)
     iw, ih = Image.open(path).size
-    max_w, max_h = int(W - Inches(1.8)), int(H - Inches(2.2))
-    scale = min(max_w / iw, max_h / ih)
-    w, h = int(iw * scale), int(ih * scale)
-    s.shapes.add_picture(path, int((int(W) - w) / 2), Inches(1.7), width=w, height=h)
-    return s
+    sc = min(int(W-Inches(1.8))/iw, int(H-int(top)-Inches(0.7))/ih)
+    w, h = int(iw*sc), int(ih*sc)
+    s.shapes.add_picture(path, int((int(W)-w)/2), top, width=w, height=h)
 
-# Cover slide
-s = prs.slides.add_slide(prs.slide_layouts[6]); fill(s, BG)
-textbox(s, 'Deck title', Inches(2.6), 48, FG, bold=True)
-textbox(s, 'Subtitle · author · date', Inches(4.0), 22, RGBColor(0x94,0xa3,0xb8))
-
-# A content slide
-s = prs.slides.add_slide(prs.slide_layouts[6]); fill(s, BG); accent_bar(s)
-textbox(s, 'Takeaway heading', Inches(0.6), 32, ACCENT, bold=True)
-body = textbox(s, '', Inches(1.8), 20, FG)
-for j, line in enumerate(['Point one', 'Point two', 'Point three']):
-    p = body.paragraphs[0] if j == 0 else body.add_paragraph()
-    r = p.add_run(); r.text = '•  ' + line; r.font.size = Pt(20); r.font.color.rgb = FG; r.font.name = 'Calibri'
-    p.space_after = Pt(10)
-
-# Image slides — REQUIRED: add one per image shown inline, using its real file path.
-# A generated photo (path from the generate_image tool result):
-picture_slide('/work/data/generated_image_1.png', 'A generated photo')
-# A chart you saved this turn:
-# picture_slide('/work/chart1.png', 'Revenue by month')
+# Same slides, order and content as the inline deck:
+cover_slide('Deck title', 'Subtitle · author · date')
+content_slide('Takeaway heading', ['Point one', 'Point two', 'Point three'])
+# picture_slide('/work/data/generated_image_1.png', 'A generated photo')
 
 prs.save('/work/out/deck.pptx'); print('saved /work/out/deck.pptx')
 ```
@@ -405,8 +412,12 @@ prs.save('/work/out/deck.pptx'); print('saved /work/out/deck.pptx')
   them. Do NOT tell the user to use arrow keys, click, or dot indicators — the deck has no such
   navigation. Only mention images/logos you ACTUALLY placed in the HTML (never claim a logo is on
   the slides unless you added one).
-- Parity: every chart/photo shown inline must ALSO be a picture slide in the .pptx (call
-  `picture_slide(...)` for each). A .pptx that's missing the images the user saw inline is a bug.
+- Parity is required: the .pptx must be the SAME presentation as the inline deck — same LIGHT theme
+  and accent, same slides in the same order, same titles/bullets, and every chart/photo/logo shown
+  inline must ALSO be a `picture_slide` in the .pptx. A dark .pptx when the inline deck is light, a
+  different layout, or missing images/slides, is a bug.
+- Build .pptx slides ONLY via the `cover_slide` / `content_slide` / `picture_slide` helpers — do not
+  hand-position textboxes at custom coordinates, which causes text to overlap.
 - One idea per slide, takeaway titles, ≤6 bullets, consistent colours/fonts. Design it; don't ship
   plain black-on-white text.
 "##;
