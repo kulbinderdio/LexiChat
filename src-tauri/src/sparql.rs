@@ -135,6 +135,8 @@ pub fn build_tools(ep: &RegisteredSparqlEndpoint) -> Vec<APITool> {
                 location: "body".into(),
                 required: true,
                 description: "The full SPARQL query string.".into(),
+                explode: true,
+                style: String::new(),
             }],
             schema: query_schema,
         },

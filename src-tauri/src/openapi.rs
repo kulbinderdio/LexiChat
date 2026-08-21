@@ -24,12 +24,22 @@ pub struct APITool {
     pub schema: Value, // JSON schema for the tool function
 }
 
+fn default_true() -> bool { true }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct APIParam {
     pub name: String,
     pub location: String, // "path", "query", "body"
     pub required: bool,
     pub description: String,
+    /// Array query serialization (OpenAPI). `explode=true` → repeated keys (`?k=a&k=b`);
+    /// `explode=false` → a single delimited value (`?k=a,b`). Default true (OpenAPI `form` default).
+    #[serde(default = "default_true")]
+    pub explode: bool,
+    /// Query `style` — only meaningful for non-exploded arrays: `form`→comma, `spaceDelimited`→space,
+    /// `pipeDelimited`→pipe. Empty = form (comma).
+    #[serde(default)]
+    pub style: String,
 }
 
 /// Convert a JSON scalar arg (string, number, or bool) into its string form for
@@ -54,8 +64,19 @@ fn build_query_params(params: &[APIParam], args: &Value) -> Vec<(String, String)
     for p in params.iter().filter(|p| p.location == "query") {
         match &args[&p.name] {
             Value::Array(items) => {
-                for it in items {
-                    if let Some(v) = arg_to_string(it) { out.push((p.name.clone(), v)); }
+                let vals: Vec<String> = items.iter().filter_map(arg_to_string).collect();
+                if p.explode {
+                    // explode=true → one pair per item (?k=a&k=b)
+                    for v in vals { out.push((p.name.clone(), v)); }
+                } else if !vals.is_empty() {
+                    // explode=false → a single delimited value (?k=a,b). A server that strictly
+                    // deserialises its query rejects repeated keys ("duplicate field") for these.
+                    let delim = match p.style.as_str() {
+                        "spaceDelimited" => " ",
+                        "pipeDelimited" => "|",
+                        _ => ",", // form (default)
+                    };
+                    out.push((p.name.clone(), vals.join(delim)));
                 }
             }
             other => {
@@ -210,26 +231,34 @@ pub fn parse_spec(title: &str, _base_url: &str, spec_json: &str) -> Result<Vec<A
 
                     if name.is_empty() { continue; }
                     if required { required_params.push(name.clone()); }
+                    // Array query serialization: OpenAPI's default `explode` is true for `form`
+                    // (the query default) and false otherwise; honour an explicit `explode`.
+                    let style = param["style"].as_str().unwrap_or("form").to_string();
+                    let explode = param["explode"].as_bool().unwrap_or(style == "form");
                     // Resolve the param schema (following $ref/allOf) so enum values, array
                     // items, etc. reach the model — otherwise it guesses enum values and the
                     // API rejects them with a 400 validation error.
                     json_props.insert(name.clone(), param_json_schema(&param["schema"], &spec, &desc));
-                    params.push(APIParam { name, location, required, description: desc });
+                    params.push(APIParam { name, location, required, description: desc, explode, style });
                 }
             }
 
-            // Request body (simplified — top-level properties only)
-            if let Some(body) = operation["requestBody"]["content"]["application/json"]["schema"]["properties"].as_object() {
-                let body_required: Vec<String> = operation["requestBody"]["content"]["application/json"]["schema"]["required"]
-                    .as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            // Request body (top-level properties). The body schema is often a `$ref` (e.g.
+            // requestBody.schema = { $ref: .../ExecuteSqlRequest }) — resolve it first, otherwise
+            // its properties are missed and the request is sent with an EMPTY body (server: "EOF").
+            let body_schema = resolve_ref(&operation["requestBody"]["content"]["application/json"]["schema"], &spec, 8);
+            if let Some(body) = body_schema.get("properties").and_then(|p| p.as_object()) {
+                let body_required: Vec<String> = body_schema.get("required")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
                     .unwrap_or_default();
                 for (name, prop) in body {
                     let desc = prop["description"].as_str().unwrap_or("").to_string();
-                    let ptype = prop["type"].as_str().unwrap_or("string").to_string();
                     let required = body_required.contains(name);
                     if required { required_params.push(name.clone()); }
-                    json_props.insert(name.clone(), serde_json::json!({ "type": ptype, "description": desc }));
-                    params.push(APIParam { name: name.clone(), location: "body".into(), required, description: desc });
+                    // Carry through nested types (objects/arrays/enums) so the model builds a valid body.
+                    json_props.insert(name.clone(), param_json_schema(prop, &spec, &desc));
+                    params.push(APIParam { name: name.clone(), location: "body".into(), required, description: desc, explode: true, style: String::new() });
                 }
             }
 
@@ -484,8 +513,8 @@ mod tests {
     #[test]
     fn array_query_param_expands_to_repeated_pairs() {
         let params = vec![
-            APIParam { name: "CommitteeIds".into(), location: "query".into(), required: false, description: String::new() },
-            APIParam { name: "Take".into(), location: "query".into(), required: false, description: String::new() },
+            APIParam { name: "CommitteeIds".into(), location: "query".into(), required: false, description: String::new(), explode: true, style: "form".into() },
+            APIParam { name: "Take".into(), location: "query".into(), required: false, description: String::new(), explode: true, style: "form".into() },
         ];
         let args = serde_json::json!({ "CommitteeIds": [1, 2, 3], "Take": 5 });
         let pairs = build_query_params(&params, &args);
@@ -495,6 +524,38 @@ mod tests {
             ("CommitteeIds".into(), "3".into()),
             ("Take".into(), "5".into()),
         ]);
+    }
+
+    #[test]
+    fn array_query_param_explode_false_joins_with_delimiter() {
+        // A server that strictly deserialises its query rejects repeated keys; explode=false must
+        // produce a single delimited value (?types=table,view), not ?types=table&types=view.
+        let form = vec![APIParam { name: "types".into(), location: "query".into(), required: false, description: String::new(), explode: false, style: "form".into() }];
+        assert_eq!(build_query_params(&form, &serde_json::json!({ "types": ["table", "view"] })),
+                   vec![("types".into(), "table,view".into())]);
+        let pipe = vec![APIParam { name: "types".into(), location: "query".into(), required: false, description: String::new(), explode: false, style: "pipeDelimited".into() }];
+        assert_eq!(build_query_params(&pipe, &serde_json::json!({ "types": ["a", "b"] })),
+                   vec![("types".into(), "a|b".into())]);
+    }
+
+    #[test]
+    fn request_body_ref_is_resolved_to_body_params() {
+        // requestBody.schema as a $ref must be resolved, or no body fields are found and the
+        // request goes out with an empty body (server: "Failed to parse the request body: EOF").
+        let spec = serde_json::json!({
+            "openapi": "3.0.3", "info": { "title": "T", "version": "1" },
+            "components": { "schemas": { "ExecReq": {
+                "type": "object", "required": ["statement"],
+                "properties": { "statement": { "type": "string" }, "max_rows": { "type": "integer" } } } } },
+            "paths": { "/sql": { "post": { "operationId": "exec",
+                "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExecReq" } } } },
+                "responses": { "200": { "description": "ok" } } } } }
+        }).to_string();
+        let tools = parse_spec("Svc", "http://x", &spec).unwrap();
+        let ps = &tools[0].parameters;
+        assert!(ps.iter().any(|p| p.name == "statement" && p.location == "body" && p.required),
+                "statement body param missing (ref not resolved)");
+        assert!(ps.iter().any(|p| p.name == "max_rows" && p.location == "body"));
     }
 
     // ── sanitize_tool_name ────────────────────────────────────────────────────
@@ -552,6 +613,7 @@ mod tests {
     fn query_params_include_non_string_scalars() {
         let p = |name: &str| APIParam {
             name: name.into(), location: "query".into(), required: false, description: String::new(),
+            explode: true, style: "form".into(),
         };
         let params = vec![p("lat"), p("lng"), p("limit"), p("active"), p("q"), p("missing")];
         let args = serde_json::json!({
