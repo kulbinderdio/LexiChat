@@ -2236,6 +2236,7 @@ export default function App() {
           enabled_skill_ids: activeProfile?.enabledSkillIds ?? null,
           max_tools: (activeProfile?.maxTools ?? settings.maxTools) || null,
           tool_result_limit: activeProfile?.toolResultLimit ?? null,
+          web_tool_cap: activeProfile?.webToolCap ?? null,
           allow_code_tools: forceAllowCodeToolsRef.current || (activeProfile?.allowCodeTools ?? false),
         }
       });

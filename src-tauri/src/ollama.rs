@@ -1282,6 +1282,9 @@ pub async fn agent_loop<R: tauri::Runtime>(
     app: &AppHandle<R>,
     silent: bool,
     max_steps: usize,
+    // Per-turn cap on web_search + fetch_webpage calls (0 → default). A runaway guard; raise it for
+    // research/scraping profiles that legitimately fetch many pages.
+    web_tool_cap: usize,
     // Set by the Stop button; checked between steps and while streaming to abort the run.
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     // Discovery mode: when there are many tools, expose only built-ins + `find_tools` and let the
@@ -1370,9 +1373,10 @@ pub async fn agent_loop<R: tauri::Runtime>(
     // that because the args differ. Past the cap, further calls are refused, not executed.
     let mut tool_name_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     const TOOL_NAME_CALL_CAP: usize = 8;
-    // Web tools flail more readily (endless search/scrape variations) and have authoritative
-    // alternatives, so they get a tighter per-name cap than data/API tools.
-    const WEB_TOOL_CALL_CAP: usize = 4;
+    // Web tools flail more readily (endless search/scrape variations), so they get their own
+    // per-name cap. Default 10; a profile can raise it (web_tool_cap) for heavy fetching.
+    const DEFAULT_WEB_TOOL_CALL_CAP: usize = 10;
+    let web_tool_cap = if web_tool_cap > 0 { web_tool_cap } else { DEFAULT_WEB_TOOL_CALL_CAP };
     // Turn-level runaway guards. The per-tool caps above miss a model that *rotates* among tools
     // (web_search→fetch→query→run_python…), keeping each under its cap while the turn total and
     // wall-clock climb unbounded (observed: 30 calls / 13 min, and a 65-min map spiral). These
@@ -1844,7 +1848,7 @@ pub async fn agent_loop<R: tauri::Runtime>(
             if name != "run_python" {
                 let n = { let c = tool_name_counts.entry(name.clone()).or_insert(0); *c += 1; *c };
                 let cap = match name.as_str() {
-                    "web_search" | "fetch_webpage" => WEB_TOOL_CALL_CAP,
+                    "web_search" | "fetch_webpage" => web_tool_cap,
                     _ => TOOL_NAME_CALL_CAP,
                 };
                 if n > cap {
@@ -2717,6 +2721,7 @@ mod tests {
             app.handle(),
             false, // interactive chat, as in the failing session
             20,
+            0, // web_tool_cap: default
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             false, // discover_tools: exercise the legacy pre-flight path
             vec![], // skills
@@ -2859,6 +2864,7 @@ mod tests {
         let result = agent_loop(
             &Backend::ollama(server.uri()), "m", "sys", &[], &groups, 5, None, None,
             &conversation, vec![], vec![], &mcp, vec![], vec![], 10, 0, app.handle(), true, 5,
+            0, // web_tool_cap: default
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             false, // discover_tools: exercise the legacy pre-flight path
             vec![], // skills
@@ -3017,6 +3023,7 @@ mod tests {
         let result = agent_loop(
             &Backend::ollama(server.uri()), "qwen3.6:latest", "You are a helpful assistant.", &[], &[], 0, None, None,
             &conversation, vec![], vec![], &mcp, vec![], vec![], 10, 0, app.handle(), false, 20,
+            0, // web_tool_cap: default
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             false, // discover_tools: exercise the legacy pre-flight path
             vec![], // skills
@@ -3120,6 +3127,7 @@ mod tests {
             &[], 0, None, None,
             &conversation, vec![], vec![], &mcp, vec![], vec![], 10, 0,
             app.handle(), false, 20,
+            0, // web_tool_cap: default
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             false, // discover_tools: exercise the legacy pre-flight path
             vec![], // skills
@@ -3192,6 +3200,7 @@ mod tests {
             &[], 0, None, None,
             &conversation, vec![], vec![], &mcp, vec![], vec![], 10, 0,
             app.handle(), false, 20,
+            0, // web_tool_cap: default
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             false, // discover_tools: exercise the legacy pre-flight path
             vec![], // skills

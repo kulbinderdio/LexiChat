@@ -412,6 +412,9 @@ pub struct SendMessageArgs {
     /// Max chars of a tool result fed back to the model (profile's toolResultLimit). None/0 → default.
     #[serde(default)]
     pub tool_result_limit: Option<usize>,
+    /// Per-turn cap on web_search + fetch_webpage calls (profile's webToolCap). None/0 → default (10).
+    #[serde(default)]
+    pub web_tool_cap: Option<usize>,
 }
 
 fn default_web_search_results() -> usize { 10 }
@@ -631,6 +634,7 @@ async fn send_message(
         &app,
         false, // silent = false for interactive chat
         if args.max_steps == 0 { usize::MAX } else { args.max_steps.max(1) }, // 0 = no limit; else uncapped (loop guards still stop runaways)
+        args.web_tool_cap.unwrap_or(0), // 0 → default web-tool cap
         cancel,
         true, // discover_tools: interactive chat uses find_tools discovery for large tool sets
         skills_snapshot,

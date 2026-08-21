@@ -444,7 +444,7 @@ pub async fn execute_job(
             None, None, &conversation,
             registered_specs, Vec::new(), &temp_mcp, ctx.allowed_dirs.clone(),
             Vec::new(), // no attached-file sandbox paths in jobs
-            10, 0, app, true, 25, // web_search=10, tool_result_limit=default; 25 steps — enough headroom for multi-step workflows
+            10, 0, app, true, 25, 0, // web_search=10, tool_result_limit=default; 25 steps; web_tool_cap=default
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)), // jobs aren't user-cancellable
             false, // discover_tools: jobs keep the deterministic LLM pre-flight
             Vec::new(), // skills: interactive only (jobs can't run code / show a permission prompt)
@@ -476,7 +476,7 @@ pub async fn execute_job(
             None, None, &conversation,
             specs, Vec::new(), &state.mcp_connections, allowed_dirs,
             Vec::new(), // no attached-file sandbox paths in jobs
-            10, 0, app, true, 25, // web_search=10, tool_result_limit=default; 25 steps — enough headroom for multi-step workflows
+            10, 0, app, true, 25, 0, // web_search=10, tool_result_limit=default; 25 steps; web_tool_cap=default
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)), // jobs aren't user-cancellable
             false, // discover_tools: jobs keep the deterministic LLM pre-flight
             Vec::new(), // skills: interactive only

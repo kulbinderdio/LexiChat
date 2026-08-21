@@ -113,6 +113,8 @@ export interface Profile {
   wikiEnabled?: boolean;
   // Max chars of a tool result fed back to the model. undefined = default (6000).
   toolResultLimit?: number;
+  // Per-turn cap on web_search + fetch_webpage calls (runaway guard). undefined = default (10).
+  webToolCap?: number;
   // Allow code (run_python) to call registered tools via call_tool() / list_tools() (code-mode).
   // Off unless opted in — it lets sandboxed Python invoke any tool this profile enables.
   allowCodeTools?: boolean;
@@ -1067,6 +1069,22 @@ function ProfilesTab({ settings, onChange }: { settings: AppSettings; onChange: 
                 How much of each tool/API response the model sees before it's truncated. Raise it for
                 data-heavy APIs that return large JSON (e.g. Parliament membership lists); lower it to
                 save context. Default 6000.
+              </div>
+            </div>
+
+            <div className="field" style={{ marginBottom: 12 }}>
+              <label>Web Tool Call Limit (per turn)</label>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+                <button className="stepper-btn"
+                  onClick={() => setDraft({ ...d, webToolCap: Math.max(2, (d.webToolCap ?? 10) - 2) })}>−</button>
+                <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 600, minWidth: 28, textAlign: "center" }}>{d.webToolCap ?? 10}</span>
+                <button className="stepper-btn"
+                  onClick={() => setDraft({ ...d, webToolCap: Math.min(50, (d.webToolCap ?? 10) + 2) })}>+</button>
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 4 }}>
+                Max <code>web_search</code> + <code>fetch_webpage</code> calls in a single turn — a runaway
+                guard. Raise it for research/scraping that legitimately fetches many pages; the overall
+                per-turn tool cap still applies. Default 10.
               </div>
             </div>
 
