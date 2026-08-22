@@ -1271,25 +1271,28 @@ async fn web_search(args: &Value, max_results: usize) -> String {
 #[derive(Debug, PartialEq)]
 enum FetchKind { Pdf, Html, Text, Binary }
 
-/// Classify a Content-Type so fetch_webpage can extract PDFs, parse HTML into readable text, return
-/// structured/plain text (JSON, XML, text/plain) VERBATIM — running the HTML extractor on JSON
-/// corrupts and truncates it (the cause of mangled NOMIS/API data) — and refuse binary files.
-fn classify_content_type(ctype: &str) -> FetchKind {
+/// Decide how fetch_webpage should treat a response. Uses the Content-Type PLUS the URL's file
+/// extension and any `Content-Disposition` attachment filename, so a CSV/JSON/text file served as a
+/// DOWNLOAD (application/octet-stream, application/csv, application/vnd.ms-excel, …) is returned
+/// verbatim rather than refused as "binary" — this is how an "Export/Download CSV" link is fetched.
+/// Running the HTML extractor on JSON/CSV corrupts it, so structured/plain data is always returned raw.
+fn classify_fetch(ctype: &str, url: &str, disposition: Option<&str>) -> FetchKind {
     let c = ctype.to_ascii_lowercase();
-    if c.contains("pdf") {
-        FetchKind::Pdf
-    } else if c.contains("html") {
-        FetchKind::Html
-    } else if c.contains("json") || c.contains("xml") || c.contains("javascript")
-        || c.starts_with("text/")
-    {
-        // Structured/plain text — return it raw so the model gets valid JSON/XML, not HTML-stripped.
-        FetchKind::Text
-    } else if c.is_empty() {
-        FetchKind::Html // unknown type → assume a web page
-    } else {
-        FetchKind::Binary
-    }
+    if c.contains("pdf") { return FetchKind::Pdf; }
+    if c.contains("html") { return FetchKind::Html; }
+    let ct_text = c.contains("json") || c.contains("xml") || c.contains("javascript")
+        || c.contains("csv") || c.contains("tab-separated") || c.starts_with("text/");
+    // Filename hints: the URL path (minus query/fragment) and a Content-Disposition filename.
+    let path = url.split(['?', '#']).next().unwrap_or(url).to_ascii_lowercase();
+    let disp = disposition.unwrap_or("").to_ascii_lowercase();
+    const TEXT_EXT: [&str; 8] = ["csv", "tsv", "tab", "json", "ndjson", "xml", "txt", "md"];
+    let ext_text = TEXT_EXT.iter().any(|e| {
+        let dot = format!(".{e}");
+        path.ends_with(&dot) || disp.contains(&dot)
+    });
+    if ct_text || ext_text { return FetchKind::Text; }
+    if c.is_empty() { return FetchKind::Html; } // unknown type → assume a web page
+    FetchKind::Binary
 }
 
 async fn fetch_webpage(args: &Value) -> String {
@@ -1299,7 +1302,7 @@ async fn fetch_webpage(args: &Value) -> String {
         return format!("Invalid URL '{url}': must start with http:// or https://");
     }
 
-    use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, CONTENT_TYPE, REFERER, UPGRADE_INSECURE_REQUESTS};
+    use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, REFERER, UPGRADE_INSECURE_REQUESTS};
 
     let mut headers = HeaderMap::new();
     headers.insert(ACCEPT, HeaderValue::from_static(
@@ -1343,9 +1346,15 @@ async fn fetch_webpage(args: &Value) -> String {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
+    let disposition = resp
+        .headers()
+        .get(CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
 
-    // Route by content type: extract PDFs, refuse other binaries, else parse HTML.
-    match classify_content_type(&ctype) {
+    // Route by content type + URL/filename: extract PDFs, download CSV/JSON/text (incl. attachments),
+    // refuse other binaries, else parse HTML.
+    match classify_fetch(&ctype, url, disposition.as_deref()) {
         FetchKind::Pdf => {
             let bytes = match resp.bytes().await {
                 Ok(b) => b,
@@ -1802,22 +1811,34 @@ mod tests {
 
     #[test]
     fn classify_content_type_routes_correctly() {
+        let u = "https://x.com/page";
         // PDFs (the bug: an FDA "…/download" PDF that stalled fetch_webpage).
-        assert_eq!(classify_content_type("application/pdf"), FetchKind::Pdf);
-        assert_eq!(classify_content_type("application/pdf; charset=binary"), FetchKind::Pdf);
+        assert_eq!(classify_fetch("application/pdf", u, None), FetchKind::Pdf);
+        assert_eq!(classify_fetch("application/pdf; charset=binary", u, None), FetchKind::Pdf);
         // HTML / text / structured all take the normal text path.
-        assert_eq!(classify_content_type("text/html; charset=utf-8"), FetchKind::Html);
-        assert_eq!(classify_content_type("application/xhtml+xml"), FetchKind::Html); // xhtml is html
+        assert_eq!(classify_fetch("text/html; charset=utf-8", u, None), FetchKind::Html);
+        assert_eq!(classify_fetch("application/xhtml+xml", u, None), FetchKind::Html); // xhtml is html
         // Structured/plain text is returned verbatim (not HTML-stripped) so API JSON stays intact.
-        assert_eq!(classify_content_type("text/plain"), FetchKind::Text);
-        assert_eq!(classify_content_type("application/json"), FetchKind::Text);
-        assert_eq!(classify_content_type("application/json; charset=utf-8"), FetchKind::Text);
-        assert_eq!(classify_content_type("text/xml"), FetchKind::Text);
-        assert_eq!(classify_content_type(""), FetchKind::Html); // missing header → try as HTML
+        assert_eq!(classify_fetch("text/plain", u, None), FetchKind::Text);
+        assert_eq!(classify_fetch("application/json", u, None), FetchKind::Text);
+        assert_eq!(classify_fetch("application/json; charset=utf-8", u, None), FetchKind::Text);
+        assert_eq!(classify_fetch("text/xml", u, None), FetchKind::Text);
+        assert_eq!(classify_fetch("", u, None), FetchKind::Html); // missing header → try as HTML
         // Real binaries must NOT be decoded as garbage HTML.
-        assert_eq!(classify_content_type("image/png"), FetchKind::Binary);
-        assert_eq!(classify_content_type("application/zip"), FetchKind::Binary);
-        assert_eq!(classify_content_type("application/octet-stream"), FetchKind::Binary);
+        assert_eq!(classify_fetch("image/png", u, None), FetchKind::Binary);
+        assert_eq!(classify_fetch("application/zip", u, None), FetchKind::Binary);
+        assert_eq!(classify_fetch("application/octet-stream", u, None), FetchKind::Binary);
+
+        // CSV/data DOWNLOADS: served as csv, or as a download whose URL/filename ends in a data
+        // extension, must be returned as Text (the "Export as CSV" case), not refused as binary.
+        assert_eq!(classify_fetch("text/csv", u, None), FetchKind::Text);
+        assert_eq!(classify_fetch("application/csv", u, None), FetchKind::Text);
+        assert_eq!(classify_fetch("application/octet-stream", "https://x.com/export.csv", None), FetchKind::Text);
+        assert_eq!(classify_fetch("application/octet-stream", "https://x.com/data.tsv?x=1", None), FetchKind::Text);
+        assert_eq!(classify_fetch("application/vnd.ms-excel", "https://x.com/report.csv", None), FetchKind::Text);
+        assert_eq!(classify_fetch("application/octet-stream", "https://x.com/export", Some("attachment; filename=\"members.csv\"")), FetchKind::Text);
+        // An .xlsx download stays binary (we can't read it as text).
+        assert_eq!(classify_fetch("application/octet-stream", "https://x.com/report.xlsx", None), FetchKind::Binary);
     }
 
     // ── PDF glyph safety & wrapping ──────────────────────────────────────────
