@@ -45,6 +45,9 @@ export interface StoredOpenAPISpec {
   spec_json: string;
   auth?: AuthConfig;
   enabled?: boolean;
+  // User-defined grouping label for the OpenAPI tab (free-text, like skill categories). Blank =
+  // Uncategorised. Organizational metadata only — the backend/tool routing ignores it.
+  category?: string;
 }
 
 // IDs of built-in specs that ship with the app (user can disable but not delete)
@@ -972,19 +975,40 @@ function ProfilesTab({ settings, onChange }: { settings: AppSettings; onChange: 
                   Select which services this profile can access.
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  {settings.toolRegistry.openapiSpecs.map(sp => (
-                    <label key={sp.id} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12 }}>
-                      <input type="checkbox" className="admin-checkbox"
-                        checked={d.enabledOpenapiSpecIds.includes(sp.id)}
-                        onChange={e => setDraft({ ...d, enabledOpenapiSpecIds: e.target.checked
-                          ? [...d.enabledOpenapiSpecIds, sp.id]
-                          : d.enabledOpenapiSpecIds.filter(id => id !== sp.id) })} />
-                      <span>🌐 {sp.title}</span>
-                      {BUILTIN_OPENAPI_SPEC_IDS.has(sp.id) && (
-                        <span style={{ fontSize: 10, opacity: 0.4 }}>(built-in)</span>
-                      )}
-                    </label>
-                  ))}
+                  {(() => {
+                    const UNCAT = "Uncategorised";
+                    const specs = settings.toolRegistry.openapiSpecs;
+                    const grouped = new Map<string, typeof specs>();
+                    for (const sp of specs) {
+                      const cat = (sp.category || "").trim() || UNCAT;
+                      if (!grouped.has(cat)) grouped.set(cat, []);
+                      grouped.get(cat)!.push(sp);
+                    }
+                    const cats = [...grouped.keys()].sort((a, b) =>
+                      a === UNCAT ? 1 : b === UNCAT ? -1 : a.localeCompare(b));
+                    const single = cats.length === 1;
+                    const specRow = (sp: typeof specs[number]) => (
+                      <label key={sp.id} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12 }}>
+                        <input type="checkbox" className="admin-checkbox"
+                          checked={d.enabledOpenapiSpecIds.includes(sp.id)}
+                          onChange={e => setDraft({ ...d, enabledOpenapiSpecIds: e.target.checked
+                            ? [...d.enabledOpenapiSpecIds, sp.id]
+                            : d.enabledOpenapiSpecIds.filter(id => id !== sp.id) })} />
+                        <span>🌐 {sp.title}</span>
+                        {BUILTIN_OPENAPI_SPEC_IDS.has(sp.id) && (
+                          <span style={{ fontSize: 10, opacity: 0.4 }}>(built-in)</span>
+                        )}
+                      </label>
+                    );
+                    return cats.map(cat => (
+                      <div key={cat} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        {!single && (
+                          <div style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--text-tertiary)", marginTop: 4 }}>{cat}</div>
+                        )}
+                        {grouped.get(cat)!.map(specRow)}
+                      </div>
+                    ));
+                  })()}
                 </div>
               </div>
             )}
@@ -1591,16 +1615,22 @@ function OpenAPITab({ stored, onChange }: { stored: StoredOpenAPISpec[]; onChang
   const [baseUrl, setBaseUrl] = useState("");
   const [specJson, setSpecJson] = useState("");
   const [auth, setAuth] = useState<AuthConfig>(DEFAULT_AUTH);
+  const [category, setCategory] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [collapsedCats, setCollapsedCats] = useState<Set<string>>(new Set()); // collapsed category groups
+  const [query, setQuery] = useState("");
+
+  // Distinct categories already in use (for the add/edit datalist).
+  const categories = [...new Set(stored.map(s => (s.category || "").trim()).filter(Boolean))].sort();
 
   useEffect(() => {
     invoke<SpecInfo[]>("list_openapi_specs").then(setSpecs).catch(() => {});
   }, []);
 
   const resetForm = () => {
-    setTitle(""); setBaseUrl(""); setSpecJson(""); setAuth(DEFAULT_AUTH); setError("");
+    setTitle(""); setBaseUrl(""); setSpecJson(""); setAuth(DEFAULT_AUTH); setCategory(""); setError("");
     setEditingId(null); setShowAdd(false);
   };
 
@@ -1628,6 +1658,7 @@ function OpenAPITab({ stored, onChange }: { stored: StoredOpenAPISpec[]; onChang
     setBaseUrl(storedSpec.base_url);
     setSpecJson(storedSpec.spec_json);
     setAuth(storedSpec.auth ?? DEFAULT_AUTH);
+    setCategory(storedSpec.category ?? "");
     setError("");
     setShowAdd(false);
   };
@@ -1640,7 +1671,7 @@ function OpenAPITab({ stored, onChange }: { stored: StoredOpenAPISpec[]; onChang
       const info = await invoke<SpecInfo>("register_openapi_spec", {
         args: { title: title.trim(), base_url: baseUrl.trim(), spec_json: specJson.trim(), auth }
       });
-      const entry: StoredOpenAPISpec = { id: info.id, title: title.trim(), base_url: baseUrl.trim(), spec_json: specJson.trim(), auth };
+      const entry: StoredOpenAPISpec = { id: info.id, title: title.trim(), base_url: baseUrl.trim(), spec_json: specJson.trim(), auth, category: category.trim() || undefined };
       setSpecs(prev => [...prev, info]);
       onChange([...stored, entry]);
       resetForm();
@@ -1660,7 +1691,7 @@ function OpenAPITab({ stored, onChange }: { stored: StoredOpenAPISpec[]; onChang
       const info = await invoke<SpecInfo>("register_openapi_spec", {
         args: { title: title.trim(), base_url: baseUrl.trim(), spec_json: specJson.trim(), auth }
       });
-      const entry: StoredOpenAPISpec = { id: info.id, title: title.trim(), base_url: baseUrl.trim(), spec_json: specJson.trim(), auth };
+      const entry: StoredOpenAPISpec = { id: info.id, title: title.trim(), base_url: baseUrl.trim(), spec_json: specJson.trim(), auth, category: category.trim() || undefined };
       setSpecs(prev => prev.filter(s => s.id !== editingId).concat(info));
       onChange(stored.filter(s => s.id !== editingId).concat(entry));
       resetForm();
@@ -1682,14 +1713,64 @@ function OpenAPITab({ stored, onChange }: { stored: StoredOpenAPISpec[]; onChang
 
   const methodColor = (m: string) => ({ GET: "#4ade80", POST: "#60a5fa", PUT: "#fb923c", PATCH: "#facc15", DELETE: "#f87171" }[m] ?? "#888");
 
+  // Filter by search (title, base URL, category, or any tool name/path), then group by category
+  // (Uncategorised last). Order within a group is insertion order.
+  const q = query.trim().toLowerCase();
+  const filteredStored = q
+    ? stored.filter(s => {
+        const spec = specs.find(sp => sp.id === s.id);
+        return s.title.toLowerCase().includes(q)
+          || (s.base_url || "").toLowerCase().includes(q)
+          || (s.category || "").toLowerCase().includes(q)
+          || (spec?.tools || []).some(t => t.name.toLowerCase().includes(q) || (t.path || "").toLowerCase().includes(q));
+      })
+    : stored;
+  const UNCAT = "Uncategorised";
+  const grouped = new Map<string, StoredOpenAPISpec[]>();
+  for (const s of filteredStored) {
+    const c = (s.category || "").trim() || UNCAT;
+    if (!grouped.has(c)) grouped.set(c, []);
+    grouped.get(c)!.push(s);
+  }
+  const sortedCats = [...grouped.keys()].sort((a, b) =>
+    a === UNCAT ? 1 : b === UNCAT ? -1 : a.localeCompare(b));
+
   return (
-    <div className="admin-scroll" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div style={{ flex: 1 }}>
+    <div className="admin-scroll">
+      <section className="admin-section">
+        <div className="admin-section-header" style={{ justifyContent: "space-between" }}>
+          <span><span className="admin-section-icon">🌐</span> <span className="admin-section-title">OPENAPI SERVICES</span></span>
+          {!showAdd && !editingId && <button className="btn" onClick={() => setShowAdd(true)}>+ Add spec</button>}
+        </div>
+        <div className="admin-row-sub" style={{ padding: "0 16px 10px" }}>
+          Connect external REST APIs described by an OpenAPI spec — each operation becomes a tool the model can call. Paste a spec to add one, and group them with categories.
+        </div>
+        {stored.length > 0 && (
+          <div style={{ display: "flex", padding: "0 16px 4px" }}>
+            <input className="admin-input" style={{ flex: 1 }} value={query} onChange={e => setQuery(e.target.value)}
+              placeholder={`Search ${stored.length} spec${stored.length === 1 ? "" : "s"}… (title, URL, category, tool)`} />
+          </div>
+        )}
         {specs.length === 0 && !showAdd && (
           <div className="admin-empty">No OpenAPI specs registered. Add one to call external APIs.</div>
         )}
+        {q && filteredStored.length === 0 && (
+          <div className="admin-row-sub" style={{ padding: "8px 16px" }}>No specs match "{query}".</div>
+        )}
+      </section>
 
-        {stored.map(storedSpec => {
+      {sortedCats.map(cat => {
+         const isCollapsed = !q && collapsedCats.has(cat); // searching forces groups open
+         return (
+         <div key={cat} style={{ marginBottom: 6 }}>
+          <button
+            onClick={() => setCollapsedCats(prev => { const n = new Set(prev); n.has(cat) ? n.delete(cat) : n.add(cat); return n; })}
+            style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", background: "none", border: "none", cursor: "pointer", padding: "6px 4px", color: "var(--text-secondary)", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+            <span style={{ fontSize: 9, transform: isCollapsed ? "rotate(-90deg)" : "none", transition: "transform .12s" }}>▼</span>
+            {cat}
+            <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>({grouped.get(cat)!.length})</span>
+          </button>
+          {!isCollapsed && grouped.get(cat)!.map(storedSpec => {
           const isBuiltin = BUILTIN_OPENAPI_SPEC_IDS.has(storedSpec.id);
           const isEnabled = storedSpec.enabled !== false;
           const rustSpec = specs.find(s => s.id === storedSpec.id);
@@ -1748,6 +1829,11 @@ function OpenAPITab({ stored, onChange }: { stored: StoredOpenAPISpec[]; onChang
                   <label>Base URL</label>
                   <input className="admin-input" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} />
                 </div>
+                <div className="field">
+                  <label>Category <span style={{ fontWeight: 400, color: "var(--text-tertiary)" }}>(optional — type a new name or pick an existing one)</span></label>
+                  <input className="admin-input" list="openapi-category-list" value={category} onChange={e => setCategory(e.target.value)} placeholder="e.g. Finance, Weather, Internal" />
+                  <datalist id="openapi-category-list">{categories.map(c => <option key={c} value={c} />)}</datalist>
+                </div>
                 <AuthConfigForm auth={auth} onChange={setAuth} />
                 {error && <div style={{ color: "#f87171", fontSize: 12 }}>{error}</div>}
                 <div style={{ display: "flex", gap: 8 }}>
@@ -1778,6 +1864,9 @@ function OpenAPITab({ stored, onChange }: { stored: StoredOpenAPISpec[]; onChang
             )}
           </section>
           );
+          })}
+         </div>
+         );
         })}
 
         {showAdd && (
@@ -1797,6 +1886,11 @@ function OpenAPITab({ stored, onChange }: { stored: StoredOpenAPISpec[]; onChang
                 <label>Base URL</label>
                 <input className="admin-input" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} placeholder="https://api.example.com" />
               </div>
+              <div className="field">
+                <label>Category <span style={{ fontWeight: 400, color: "var(--text-tertiary)" }}>(optional — type a new name to create one, or pick an existing)</span></label>
+                <input className="admin-input" list="openapi-category-list" value={category} onChange={e => setCategory(e.target.value)} placeholder="e.g. Finance, Weather, Internal" />
+                <datalist id="openapi-category-list">{categories.map(c => <option key={c} value={c} />)}</datalist>
+              </div>
               <AuthConfigForm auth={auth} onChange={setAuth} />
               {error && <div style={{ color: "#f87171", fontSize: 12 }}>{error}</div>}
               <div style={{ display: "flex", gap: 8 }}>
@@ -1808,12 +1902,6 @@ function OpenAPITab({ stored, onChange }: { stored: StoredOpenAPISpec[]; onChang
             </div>
           </section>
         )}
-      </div>
-      {!showAdd && !editingId && (
-        <div className="admin-footer-bar">
-          <button className="btn primary" onClick={() => setShowAdd(true)}>+ Add OpenAPI Spec</button>
-        </div>
-      )}
     </div>
   );
 }
