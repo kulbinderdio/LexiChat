@@ -1295,44 +1295,49 @@ fn classify_fetch(ctype: &str, url: &str, disposition: Option<&str>) -> FetchKin
     FetchKind::Binary
 }
 
+/// Process-shared HTTP client for fetch_webpage. A cookie jar persists across calls so multi-step
+/// session flows work — e.g. visit a search page (which sets a cookie / session token), then fetch
+/// its session-bound "Export as CSV" link or the next page. Cheap to clone (Arc inside).
+fn shared_http_client() -> reqwest::Client {
+    use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, REFERER, UPGRADE_INSECURE_REQUESTS};
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        let mut headers = HeaderMap::new();
+        headers.insert(ACCEPT, HeaderValue::from_static(
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"));
+        headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
+        headers.insert(CACHE_CONTROL, HeaderValue::from_static("max-age=0"));
+        headers.insert(UPGRADE_INSECURE_REQUESTS, HeaderValue::from_static("1"));
+        // Simulate arriving from a Google search — many sites allow more content to search referrals.
+        headers.insert(REFERER, HeaderValue::from_static("https://www.google.com/"));
+        headers.insert("Sec-Fetch-Dest", HeaderValue::from_static("document"));
+        headers.insert("Sec-Fetch-Mode", HeaderValue::from_static("navigate"));
+        headers.insert("Sec-Fetch-Site", HeaderValue::from_static("cross-site"));
+        headers.insert("Sec-Ch-Ua", HeaderValue::from_static(
+            r#""Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99""#));
+        headers.insert("Sec-Ch-Ua-Mobile", HeaderValue::from_static("?0"));
+        headers.insert("Sec-Ch-Ua-Platform", HeaderValue::from_static("\"macOS\""));
+        reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+            .default_headers(headers)
+            .cookie_store(true)
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    }).clone()
+}
+
 async fn fetch_webpage(args: &Value) -> String {
     let url = args["url"].as_str().unwrap_or("");
     if url.is_empty() { return "No URL provided".into(); }
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return format!("Invalid URL '{url}': must start with http:// or https://");
     }
-
-    use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, REFERER, UPGRADE_INSECURE_REQUESTS};
-
-    let mut headers = HeaderMap::new();
-    headers.insert(ACCEPT, HeaderValue::from_static(
-        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    ));
-    headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
-    headers.insert(CACHE_CONTROL,   HeaderValue::from_static("max-age=0"));
-    headers.insert(UPGRADE_INSECURE_REQUESTS, HeaderValue::from_static("1"));
-    // Simulate arriving from a Google search — many sites (BBC, Guardian, etc.)
-    // allow more content to apparent search-engine referrals.
-    headers.insert(REFERER, HeaderValue::from_static("https://www.google.com/"));
-    headers.insert("Sec-Fetch-Dest", HeaderValue::from_static("document"));
-    headers.insert("Sec-Fetch-Mode", HeaderValue::from_static("navigate"));
-    headers.insert("Sec-Fetch-Site", HeaderValue::from_static("cross-site"));
-    headers.insert("Sec-Ch-Ua", HeaderValue::from_static(
-        r#""Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99""#,
-    ));
-    headers.insert("Sec-Ch-Ua-Mobile",   HeaderValue::from_static("?0"));
-    headers.insert("Sec-Ch-Ua-Platform", HeaderValue::from_static("\"macOS\""));
-
-    let client = match reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-        .default_headers(headers)
-        .cookie_store(true)
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => return format!("Error building HTTP client: {e}"),
-    };
+    use reqwest::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
+    // raw=true → return the page's UNSTRIPPED HTML (for run_python + BeautifulSoup to parse a
+    // structured listing/table or find a download link), instead of readability-extracted text.
+    let raw = args["raw"].as_bool().unwrap_or(false);
+    let client = shared_http_client();
 
     let resp = match client.get(url).send().await {
         Ok(r) => r,
@@ -1389,6 +1394,16 @@ async fn fetch_webpage(args: &Value) -> String {
         Ok(t) => t,
         Err(e) => return format!("Error reading response from '{url}': {e}"),
     };
+
+    // raw=true → hand back the unstripped HTML for programmatic parsing (bs4/regex in run_python),
+    // rather than readability text. Large pages are offloaded to /work/data by the agent loop.
+    if raw {
+        return if html.trim().is_empty() {
+            format!("[The URL '{url}' returned an empty response.]")
+        } else {
+            format!("[Raw HTML of {url}]\n{html}")
+        };
+    }
 
     let needs_jina = if !status.is_success() {
         matches!(status.as_u16(), 401 | 403 | 429 | 451)

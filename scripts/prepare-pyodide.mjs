@@ -69,6 +69,8 @@ const pypi = [
   { name: "typing-extensions", imports: ["typing_extensions"], depends: [] },
   { name: "xlsxwriter",        imports: ["xlsxwriter"],        depends: [] },
   { name: "python-pptx",       imports: ["pptx"],              depends: ["lxml", "pillow", "xlsxwriter", "typing-extensions"] },
+  // python-docx (Word .docx output) — pure wheel; lxml from the dist, typing-extensions above.
+  { name: "python-docx",       imports: ["docx"],              depends: ["lxml", "typing-extensions"] },
 ];
 let pypiCount = 0;
 for (const p of pypi) {
