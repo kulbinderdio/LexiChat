@@ -834,7 +834,7 @@ function ProfilesTab({ settings, onChange }: { settings: AppSettings; onChange: 
               </div>
             </div>
 
-            <div className="field" style={{ marginBottom: 14 }}>
+            <div className="field field-sep" style={{ marginBottom: 14 }}>
               <label>Enabled Tools</label>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
                 {BUILTIN_TOOLS.filter(t => selected!.enabledTools[t.name] !== false).map(t => (
@@ -847,7 +847,7 @@ function ProfilesTab({ settings, onChange }: { settings: AppSettings; onChange: 
             </div>
 
             {settings.toolRegistry.openapiSpecs.filter(s => !BUILTIN_OPENAPI_SPEC_IDS.has(s.id)).length > 0 && (
-              <div className="field" style={{ marginBottom: 14 }}>
+              <div className="field field-sep" style={{ marginBottom: 14 }}>
                 <label>OpenAPI Services</label>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
                   {settings.toolRegistry.openapiSpecs
@@ -866,7 +866,7 @@ function ProfilesTab({ settings, onChange }: { settings: AppSettings; onChange: 
             )}
 
             {settings.toolRegistry.sparqlEndpoints.length > 0 && (
-              <div className="field" style={{ marginBottom: 14 }}>
+              <div className="field field-sep" style={{ marginBottom: 14 }}>
                 <label>SPARQL Endpoints</label>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
                   {settings.toolRegistry.sparqlEndpoints
@@ -885,7 +885,7 @@ function ProfilesTab({ settings, onChange }: { settings: AppSettings; onChange: 
             )}
 
             {settings.toolRegistry.mcpServers.length > 0 && (
-              <div className="field" style={{ marginBottom: 14 }}>
+              <div className="field field-sep" style={{ marginBottom: 14 }}>
                 <label>MCP Servers</label>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
                   {settings.toolRegistry.mcpServers
@@ -953,7 +953,7 @@ function ProfilesTab({ settings, onChange }: { settings: AppSettings; onChange: 
               </select>
             </div>
 
-            <div className="field" style={{ marginBottom: 12 }}>
+            <div className="field field-sep" style={{ marginBottom: 12 }}>
               <label>Tools</label>
               <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
                 {BUILTIN_TOOLS.map(t => (
@@ -970,7 +970,7 @@ function ProfilesTab({ settings, onChange }: { settings: AppSettings; onChange: 
             </div>
 
             {settings.toolRegistry.openapiSpecs.length > 0 && (
-              <div className="field" style={{ marginBottom: 12 }}>
+              <div className="field field-sep" style={{ marginBottom: 12 }}>
                 <label>OpenAPI Services</label>
                 <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginBottom: 6 }}>
                   Select which services this profile can access.
@@ -1027,7 +1027,7 @@ function ProfilesTab({ settings, onChange }: { settings: AppSettings; onChange: 
             )}
 
             {settings.toolRegistry.sparqlEndpoints.length > 0 && (
-              <div className="field" style={{ marginBottom: 12 }}>
+              <div className="field field-sep" style={{ marginBottom: 12 }}>
                 <label>SPARQL Endpoints</label>
                 <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginBottom: 6 }}>
                   Select which linked-data endpoints this profile can query.
@@ -1051,7 +1051,7 @@ function ProfilesTab({ settings, onChange }: { settings: AppSettings; onChange: 
             )}
 
             {settings.toolRegistry.mcpServers.length > 0 && (
-              <div className="field" style={{ marginBottom: 12 }}>
+              <div className="field field-sep" style={{ marginBottom: 12 }}>
                 <label>MCP Servers</label>
                 <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginBottom: 6 }}>
                   Select which MCP servers this profile can use.
@@ -1071,7 +1071,7 @@ function ProfilesTab({ settings, onChange }: { settings: AppSettings; onChange: 
               </div>
             )}
 
-            <div className="field" style={{ marginBottom: 12 }}>
+            <div className="field field-sep" style={{ marginBottom: 12 }}>
               <label>Max Tools per Query</label>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
                 <button className="stepper-btn" onClick={() => setDraft({ ...d, maxTools: Math.max(5, d.maxTools - 5) })}>−</button>
@@ -1140,7 +1140,7 @@ function ProfilesTab({ settings, onChange }: { settings: AppSettings; onChange: 
               </div>
             </div>
 
-            <div className="field" style={{ marginBottom: 12 }}>
+            <div className="field field-sep" style={{ marginBottom: 12 }}>
               <label>Chat Defaults</label>
               <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginBottom: 8 }}>
                 New chats in this profile start with these settings (can still be changed per chat).
@@ -1157,7 +1157,7 @@ function ProfilesTab({ settings, onChange }: { settings: AppSettings; onChange: 
               )}
             </div>
 
-            <div className="field" style={{ marginBottom: 12 }}>
+            <div className="field field-sep" style={{ marginBottom: 12 }}>
               <label>Context Variables</label>
               <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginBottom: 8, lineHeight: 1.5 }}>
                 Name/value pairs injected into every conversation as facts about you. The AI uses them automatically when relevant — e.g. <em>location</em>, <em>timezone</em>, <em>name</em>, <em>occupation</em>.

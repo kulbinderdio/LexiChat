@@ -970,6 +970,7 @@ html, body, #root { height: 100%; overflow: hidden; }
 }
 .modal h2 { font-size: 15px; font-weight: 600; }
 .field { display: flex; flex-direction: column; gap: 6px; }
+.field-sep { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-light); }
 .field label { font-size: 11px; color: var(--text-secondary); font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em; }
 .field input {
   background: var(--surface2);
