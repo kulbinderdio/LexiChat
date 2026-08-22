@@ -618,6 +618,7 @@ function ProfilesTab({ settings, onChange }: { settings: AppSettings; onChange: 
   );
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Profile | null>(null);
+  const [collapsedSpecCats, setCollapsedSpecCats] = useState<Set<string>>(new Set());
   // Skill catalogue — needed so an export can bundle the profile's custom (non-built-in) skills.
   const [allSkills, setAllSkills] = useState<SkillInfo[]>([]);
   useEffect(() => { invoke<SkillInfo[]>("get_skills").then(setAllSkills).catch(() => {}); }, []);
@@ -1000,14 +1001,26 @@ function ProfilesTab({ settings, onChange }: { settings: AppSettings; onChange: 
                         )}
                       </label>
                     );
-                    return cats.map(cat => (
-                      <div key={cat} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                        {!single && (
-                          <div style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--text-tertiary)", marginTop: 4 }}>{cat}</div>
-                        )}
-                        {grouped.get(cat)!.map(specRow)}
-                      </div>
-                    ));
+                    return cats.map(cat => {
+                      const isCollapsed = !single && collapsedSpecCats.has(cat);
+                      const items = grouped.get(cat)!;
+                      return (
+                        <div key={cat} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                          {!single && (
+                            <button type="button" onClick={() => setCollapsedSpecCats(prev => {
+                              const next = new Set(prev);
+                              next.has(cat) ? next.delete(cat) : next.add(cat);
+                              return next;
+                            })} style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", background: "none", border: "none", cursor: "pointer", padding: "4px 0", marginTop: 4, color: "var(--text-tertiary)", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                              <span style={{ fontSize: 8, transform: isCollapsed ? "rotate(-90deg)" : "none", transition: "transform .12s" }}>▼</span>
+                              {cat}
+                              <span style={{ fontWeight: 400, opacity: 0.7 }}>({items.length})</span>
+                            </button>
+                          )}
+                          {!isCollapsed && items.map(specRow)}
+                        </div>
+                      );
+                    });
                   })()}
                 </div>
               </div>
