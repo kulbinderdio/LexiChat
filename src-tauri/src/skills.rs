@@ -628,11 +628,39 @@ Leaflet. Do NOT use geopandas/matplotlib for this — it has no street basemap a
 blank background.
 
 THE #1 RULE: plot the REAL coordinates. Never use placeholder, example, sample, or made-up lat/lng.
-1. First, in `run_python`, extract the exact points from the actual tool result (e.g. the police
-   crime JSON) and print them as a JSON array of {lat, lng, label} — the true coordinates of every
-   point. If the data was offloaded to /work/data, read it there.
-2. Then call `create_artifact` with the template below, PASTING those exact points into the `points`
-   array. Set `centre` to the resolved postcode/area centre.
+
+THE #2 RULE: never retype coordinates. In `run_python`, WRITE them to a file and reference it from
+the HTML with a `{{data:…}}` token — do NOT print them and copy them into the artifact by hand. A
+route polyline is hundreds of points; hand-copying it takes minutes and silently drops points (a
+real Gravesend→Liverpool Street map lost two of its three legs that way).
+
+1. In `run_python`, extract the exact points from the actual tool result (e.g. the police crime
+   JSON, or a journey's `path.lineString`) and write them to `/work/artifacts/points.json` as a
+   JSON array of {lat, lng, label}. If the data was offloaded, read it from /work/data. Print only
+   a COUNT and a sanity check (first/last point) — never the whole array.
+2. Then call `create_artifact` with the template below, using `{{data:points.json}}` verbatim.
+   Set `centre` to the resolved postcode/area centre.
+
+COORDINATE ORDER — get this wrong and the map lands in the ocean. Leaflet takes `[lat, lng]`
+(latitude FIRST). Store every point that way in the data file and pass it straight through:
+`L.polyline(leg.pts)`, no swapping, no `[c[1], c[0]]` anywhere. TfL's `path.lineString` is ALREADY
+`[lat, lng]` — use it as-is; do NOT convert to GeoJSON `[lng, lat]` order. Sanity-check in
+`run_python` before writing the file: for the UK, every point must have `-11 < lng < 3` and
+`49 < lat < 61`; if that fails you have them the wrong way round.
+
+For a ROUTE (a journey rather than a scatter of places), write one entry per leg —
+`[{"mode":"tube","pts":[[lat,lng],…]}, …]` — and draw each leg as its own coloured `L.polyline`,
+so every leg of the journey actually appears. Downsample only if a leg exceeds a few thousand
+points. Call `fitBounds` ONCE at the end over ALL legs (`L.featureGroup(lines).getBounds()`) —
+calling it per leg inside the loop leaves the view stuck on whichever leg happened to be last.
+Prefer `L.circleMarker` over `L.marker`: the default marker icon is a remote PNG that the
+artifact sandbox blocks on Windows and Linux.
+
+For the start/end markers take the first and last COORDINATE, not the first/last leg index:
+`const start = legs[0].pts[0], end = legs[legs.length - 1].pts.slice(-1)[0];`
+Indexing `pts` by the leg number (`legs[n].pts[n]`) yields a bare number; Leaflet then throws
+"Cannot read properties of null (reading 'lat')", which kills the rest of the script and leaves
+the map blank.
 
 ```html
 <!doctype html><html><head><meta charset="utf-8">
@@ -641,8 +669,8 @@ THE #1 RULE: plot the REAL coordinates. Never use placeholder, example, sample, 
 <body><div id="map"></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-// REAL points from the tool result (replace with the actual data — NEVER placeholders):
-const points = [ {lat:51.441,lng:0.372,label:"Anti-social behaviour"} /* … all real points … */ ];
+// The REAL points, spliced in from /work/artifacts/points.json — never typed out here:
+const points = {{data:points.json}};
 const centre = [51.441, 0.372];               // resolved postcode/area centre
 const map = L.map('map').setView(centre, 15);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',

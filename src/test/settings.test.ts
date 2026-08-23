@@ -192,9 +192,46 @@ describe("saveSettings + loadSettings round-trip", () => {
       id: "p1", name: "Dev", systemPrompt: "", model: "", maxTools: 30,
       enabledTools: {}, enabledMcpServerIds: ["m1"], enabledOpenapiSpecIds: ["sp1"],
     };
-    saveSettings({ ...s, profiles: [profile] });
+    // The registry must actually hold what the profile enables — load-time pruning drops
+    // references to entries that no longer exist (see the dangling-id test below).
+    saveSettings({
+      ...s,
+      toolRegistry: {
+        ...s.toolRegistry,
+        mcpServers: [{ id: "m1", name: "Test", command: "test", args: [], env: {} }],
+        openapiSpecs: [...s.toolRegistry.openapiSpecs,
+          { id: "sp1", title: "API", base_url: "https://api.example.com", spec_json: "{}", enabled: true }],
+      },
+      profiles: [profile],
+    });
     const loaded = loadSettings();
     expect(loaded.profiles[0].enabledMcpServerIds).toEqual(["m1"]);
     expect(loaded.profiles[0].enabledOpenapiSpecIds).toEqual(["sp1"]);
+  });
+
+  // Deleting a spec/server from the registry leaves dead ids behind in every profile that had it
+  // enabled — they render as nothing but make a profile look configured when it isn't. Observed in
+  // the wild: 31 dead references across 8 profiles, three of which had NO live specs left at all.
+  it("prunes enabled-ids whose registry entry no longer exists, keeping live ones", () => {
+    const s = loadSettings();
+    saveSettings({
+      ...s,
+      toolRegistry: {
+        ...s.toolRegistry,
+        mcpServers: [{ id: "live-m", name: "Live", command: "x", args: [], env: {} }],
+        openapiSpecs: [...s.toolRegistry.openapiSpecs,
+          { id: "live-sp", title: "Live API", base_url: "https://api.example.com", spec_json: "{}", enabled: true }],
+      },
+      profiles: [{
+        id: "p1", name: "Dev", systemPrompt: "", model: "", maxTools: 30, enabledTools: {},
+        enabledMcpServerIds: ["live-m", "deleted-m"],
+        enabledOpenapiSpecIds: ["live-sp", "deleted-sp"],
+        enabledSparqlEndpointIds: ["deleted-q"],
+      }],
+    });
+    const p = loadSettings().profiles[0];
+    expect(p.enabledOpenapiSpecIds).toEqual(["live-sp"]);
+    expect(p.enabledMcpServerIds).toEqual(["live-m"]);
+    expect(p.enabledSparqlEndpointIds).toEqual([]);
   });
 });

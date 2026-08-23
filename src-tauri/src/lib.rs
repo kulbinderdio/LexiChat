@@ -837,6 +837,12 @@ fn set_code_exec_unlocked(unlocked: bool, state: State<'_, AppState>) -> Result<
 #[derive(Deserialize)]
 struct PyOutFile { name: String, b64: String }
 
+/// A text payload the code staged to /work/artifacts for a `{{data:name}}` token. Deliberately
+/// carries only the NAME and size — the content stays in the frontend and is spliced into the
+/// artifact HTML there, so bulk data never enters the model's context (see `substituteData`).
+#[derive(Deserialize)]
+struct PyDataFile { name: String, #[serde(default)] chars: usize, #[serde(default)] error: Option<String> }
+
 #[derive(Deserialize)]
 struct RespondPythonResultArgs {
     #[serde(default)] request_id: u64,
@@ -844,6 +850,7 @@ struct RespondPythonResultArgs {
     #[serde(default)] error: Option<String>,
     #[serde(default)] images: Vec<String>,
     #[serde(default)] out_files: Vec<PyOutFile>,
+    #[serde(default)] data_files: Vec<PyDataFile>,
 }
 
 /// Frontend's response to a `run-python-request`: the Pyodide worker's output, chart images, and
@@ -899,6 +906,25 @@ fn respond_python_result(args: RespondPythonResultArgs, app: AppHandle, state: S
     }
     if !failed.is_empty() {
         output.push_str(&format!("\n[Could not save to disk: {}]", failed.join("; ")));
+    }
+    // /work/artifacts payloads: tell the model the token is armed, and NOT what's in the file.
+    // That's the whole point — it references the data by name instead of retyping it.
+    if !args.data_files.is_empty() {
+        let (ok, bad): (Vec<_>, Vec<_>) = args.data_files.iter().partition(|f| f.error.is_none());
+        if !ok.is_empty() {
+            output.push_str(&format!(
+                "\n[ARTIFACT DATA READY — {}. In your create_artifact HTML write the token {{{{data:NAME}}}} \
+                 where the data should go (e.g. `const DATA = {{{{data:{}}}}};` inside a <script>), and LexiChat \
+                 splices the exact file contents in. Do NOT print these contents or copy the values into your \
+                 HTML by hand — reference them by name.]",
+                ok.iter().map(|f| format!("/work/artifacts/{} ({} chars)", f.name, f.chars))
+                    .collect::<Vec<_>>().join(", "),
+                ok[0].name));
+        }
+        for f in bad {
+            output.push_str(&format!("\n[Artifact data /work/artifacts/{} unusable: {}]",
+                f.name, f.error.as_deref().unwrap_or("unknown error")));
+        }
     }
 
     if let Some(tx) = state.pending_python_result.lock().unwrap().remove(&args.request_id) {
@@ -1173,6 +1199,21 @@ fn persist_allowed_dirs(state: &State<'_, AppState>) {
 #[tauri::command]
 fn write_file_text(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content).map_err(|e| e.to_string())
+}
+
+/// Write a small diagnostics file into the app data dir. Used by the artifact frame probe, whose
+/// result can only be observed inside the real webview — the shipped app has no dev-control server,
+/// so it leaves its findings on disk instead. Name is reduced to a bare filename so this can't be
+/// steered outside the data dir.
+#[tauri::command]
+fn write_diagnostics(name: String, content: String) -> Result<String, String> {
+    let file = std::path::Path::new(&name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "invalid diagnostics filename".to_string())?;
+    let path = crate::dirs_path().join(file);
+    std::fs::write(&path, content).map_err(|e| e.to_string())?;
+    Ok(path.display().to_string())
 }
 
 #[tauri::command]
@@ -2384,6 +2425,7 @@ pub fn run() {
             render_report_html,
             open_html_in_browser,
             write_file_text,
+            write_diagnostics,
             read_file_text,
             read_file_base64,
             read_image_data_url,

@@ -9,10 +9,14 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export interface PyFile { path: string; b64: string }
+/** A text payload written to /work/artifacts, for a create_artifact `{{data:name}}` token. `error`
+ *  is set instead of `text` when the file was too large to carry. */
+export interface PyDataFile { name: string; text: string; error?: string }
 export interface PyResult {
   output: string;
   images: string[];              // base64 PNGs (matplotlib figures)
   outFiles: { name: string; b64: string }[]; // files written to /work/out
+  dataFiles: PyDataFile[];       // text written to /work/artifacts, for {{data:name}}
   error: string | null;
 }
 
@@ -116,7 +120,7 @@ export function terminatePyodide(reason: string): void {
   worker = null; ready = null; loadError = null;
   const stuck = [...pending.values()];
   pending.clear();
-  for (const cb of stuck) cb({ output: "", images: [], outFiles: [], error: reason });
+  for (const cb of stuck) cb({ output: "", images: [], outFiles: [], dataFiles: [], error: reason });
   void ensureWorker(); // respawn so the next run isn't cold
 }
 
@@ -132,7 +136,7 @@ export function abortPyodideRun(): void {
 export async function runPython(code: string, files: PyFile[], reset = true): Promise<PyResult> {
   await ensureWorker();
   if (loadError || !worker) {
-    return { output: "", images: [], outFiles: [], error: loadError ?? "Pyodide worker unavailable." };
+    return { output: "", images: [], outFiles: [], dataFiles: [], error: loadError ?? "Pyodide worker unavailable." };
   }
   const id = ++seq;
   toolCallsRemaining = MAX_TOOL_CALLS_PER_RUN; // reset code-mode call budget per run
@@ -142,7 +146,7 @@ export async function runPython(code: string, files: PyFile[], reset = true): Pr
     // Runaway guard: if the worker doesn't return within RUN_TIMEOUT_MS, kill and respawn it (the
     // stuck WASM can't be interrupted otherwise) and surface a clear error.
     const timer = setTimeout(() => {
-      finish({ output: "", images: [], outFiles: [],
+      finish({ output: "", images: [], outFiles: [], dataFiles: [],
         error: `run_python exceeded ${RUN_TIMEOUT_MS / 1000}s and was aborted — the sandbox was reset. Simplify the code or process less data.` });
       terminatePyodide("run_python timed out — the sandbox was reset.");
     }, RUN_TIMEOUT_MS);

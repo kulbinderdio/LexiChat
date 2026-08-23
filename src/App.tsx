@@ -8,7 +8,7 @@ import { JobsPanel } from "./JobsPanel";
 import type { JobRun } from "./jobTypes";
 import lexiLogo from "./assets/lexi.png";
 import { AdminPanel, AppSettings, Profile, ServerConfig, StoredOpenAPISpec, StoredSparqlEndpoint, reconcileCatalog } from "./AdminPanel";
-import { runPython, warmPyodide, drainCodeToolCalls, abortPyodideRun, PyFile } from "./pyodide/runner";
+import { runPython, warmPyodide, drainCodeToolCalls, abortPyodideRun, PyFile, PyDataFile } from "./pyodide/runner";
 import { dedupeRegistry } from "./profileIO";
 import { ChatParamsButton, ChatParams, DEFAULT_CHAT_PARAMS, resolveParams } from "./ChatParamsPanel";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -99,8 +99,8 @@ const ALL_BUILTIN_TOOLS: ToolSchema[] = [
   { type: "function", function: { name: "compose_email", description: "Build a base64url-encoded RFC 2822 email ready for the Gmail API. Returns ONLY the raw base64url string — use the entire return value as the 'raw' field in gmail_sendmessage, with no modification.", parameters: { type: "object", properties: { to: { type: "string", description: "Recipient email address(es), comma-separated." }, from: { type: "string", description: "Sender email address (optional)." }, subject: { type: "string", description: "Email subject line." }, body: { type: "string", description: "Plain text email body." }, reply_to_message_id: { type: "string", description: "Message-ID to reply to, for threading (optional)." } }, required: ["to","subject","body"] } } },
   { type: "function", function: { name: "fetch_webpage", description: "Fetch a URL. For a web page it strips HTML and returns readable text; for a DATA FILE (CSV, TSV, JSON, XML, plain text) — including 'Export/Download CSV' links and files served as an attachment/download — it returns the raw file content. So to download a CSV/data file, just call this with the file's URL; you do NOT need browser automation, and you should NOT claim you can only fetch pages. If a page has an 'Export as CSV' / 'Download' button, find that link's URL in the page HTML (or the obvious export endpoint) and fetch it directly. Large results are truncated for display but the full content is saved to a file for run_python to process (the tool result tells you the path). Use this whenever the user wants to read a page/article (pass a web_search result's URL) or download a file; do NOT refuse or say you can only summarise. To SCRAPE a structured listing/table (e.g. search results) or find a link's exact URL, set raw:true to get the unstripped HTML and parse it in run_python with BeautifulSoup. A shared cookie session persists across calls, so you can fetch a page then fetch a link it set up (e.g. a session-bound export).", parameters: { type: "object", properties: { url: { type: "string", description: "Full URL of the page or data file to fetch, must start with http:// or https://" }, raw: { type: "boolean", description: "Return the page's raw, unstripped HTML instead of readability text — for parsing listings/tables or finding links with run_python + BeautifulSoup. Default false." } }, required: ["url"] } } },
   { type: "function", function: { name: "get_current_datetime", description: "Get the current local date and time. Returns human-readable, ISO 8601, filename-safe, and Unix timestamp formats. Use whenever you need today's date or a timestamp for a filename.", parameters: { type: "object", properties: {}, required: [] } } },
-  { type: "function", function: { name: "run_python", description: "Execute real Python (CPython) in a secure, offline sandbox to compute, analyse data, and CREATE CHARTS. The full standard library plus numpy, pandas, matplotlib, scipy, sympy, openpyxl (read/write Excel .xlsx), beautifulsoup4 (parse HTML), and geopandas with shapely & pyproj (geospatial — plot points/lines/polygons and choropleth MAPS as a matplotlib figure; note there is no online street/satellite basemap offline, so for a street-map backdrop use a connected map tool instead), python-pptx (build editable PowerPoint .pptx decks — used by the 'presentation' skill), python-docx (build editable Word .docx documents — 'from docx import Document'; save to /work/out), and Pillow/PIL (open, edit and save raster images — recolour, adjust, crop, resize, filter, composite/overlay, and draw shapes or text) are available — import them normally. These are the ONLY third-party packages, and there is NO network access, so do not import anything else (e.g. requests, scikit-learn, plotly, contextily) — it will fail. Use print() for text output. Files live in a virtual workspace at /work/uploads/: the user's attached files are there — documents (PDF, Word) are ALREADY extracted to plain text, so just open() and read them (do NOT try to PDF-parse); data files (CSV, Excel, JSON) are as-is for pandas. IMAGES the user attached are there too as REAL image files at /work/uploads/<filename> — to edit an attached photo, open it with Pillow (from PIL import Image; im = Image.open('/work/uploads/<name>')), make the change, and im.save('/work/out/<name>') — do NOT search the user's folders for it and do NOT claim you can't find it. (Note: Pillow does pixel/colour edits, not semantic object selection — to repaint a specific object like 'the building' while keeping the rest of the photo, use the generate_image tool's source_image edit mode instead.) SAVE any output (files, charts) to /work/out/ (kept for the user). Your /work files (and Python variables) PERSIST across run_python calls within the same turn — a chart PNG you saved in one call is still there in the next — and reset only when the user sends a new message. So you can build a task up across calls (e.g. generate chart PNGs in one call, then read them to build a PowerPoint in another). (For a plain read/summary of a document with no computation, prefer the read_file tool — no code or permission needed.) Use normal Python I/O — open(), pathlib, pd.read_csv('/work/uploads/data.csv'). TO SHOW A GRAPH, build a matplotlib figure (e.g. `import matplotlib.pyplot as plt; plt.plot(x, y)`) — it is rendered INLINE in the chat automatically — you do NOT need to save it (do NOT hand-draw ASCII or SVG). Only use plt.savefig('/work/out/name.png') if the user explicitly wants a saved file — /work/out is an in-memory scratch path, but anything you write there is copied to a real folder on the user's disk and the tool result reports that real absolute path. When telling the user where a file was saved, quote the real path from the tool result (the line marked SAVED TO DISK); NEVER tell the user the file is at /work/out (they cannot open that). No network access. Do not read/write paths outside /work.", parameters: { type: "object", properties: { code: { type: "string", description: "The Python source code to execute." } }, required: ["code"] } } },
-  { type: "function", function: { name: "create_artifact", description: "Render a rich, self-contained HTML page inline in the chat, with a Save button (saves as a .html file the user can open in any browser). Use this for polished deliverables — formatted reports, dashboards, styled tables/cards, or simple interactive views — when plain markdown isn't enough. The HTML MUST be fully self-contained: inline all CSS in a <style> tag and any JS in a <script> tag; NO external URLs, fonts, images, or CDNs (they are blocked) — EXCEPT for maps, where you MAY load Leaflet from unpkg/jsdelivr and OpenStreetMap/Mapbox map tiles (use these to draw a street map with real data points). To include a chart, map or image you generated earlier THIS TURN (e.g. a matplotlib chart from run_python, a map, or a photo from generate_image — great for building an image slide deck), use the placeholder token as the image source: <img src=\"{{figure:1}}\"> for the first such image, {{figure:2}} for the second, and so on (in the order they were created) — LexiChat substitutes the real image. To include an image the USER ATTACHED this turn (e.g. a logo or a photo to place on slides), reference it as <img src=\"{{upload:1}}\"> for the first attached image, {{upload:2}} for the second, etc. (in attachment order) — LexiChat substitutes it. Do NOT paste base64 image data yourself. Any other images must be data: URIs. It renders in a sandboxed frame. Do NOT put your final prose answer inside the artifact — write a short summary in chat and put the rich content in the artifact. To show ANY HTML (a page, a map, a dashboard) you MUST call THIS tool with the HTML — NEVER paste raw HTML, a <script>, or an <iframe> into your chat reply, which renders as source text, not a page.", parameters: { type: "object", properties: { title: { type: "string", description: "Short title for the artifact (used as the saved filename and header)." }, html: { type: "string", description: "A complete, self-contained HTML document (or fragment) with all CSS/JS inlined and no external resources." } }, required: ["title", "html"] } } },
+  { type: "function", function: { name: "run_python", description: "Execute real Python (CPython) in a secure, offline sandbox to compute, analyse data, and CREATE CHARTS. The full standard library plus numpy, pandas, matplotlib, scipy, sympy, openpyxl (read/write Excel .xlsx), beautifulsoup4 (parse HTML), and geopandas with shapely & pyproj (geospatial — plot points/lines/polygons and choropleth MAPS as a matplotlib figure; note there is no online street/satellite basemap offline, so for a street-map backdrop use a connected map tool instead), python-pptx (build editable PowerPoint .pptx decks — used by the 'presentation' skill), python-docx (build editable Word .docx documents — 'from docx import Document'; save to /work/out), and Pillow/PIL (open, edit and save raster images — recolour, adjust, crop, resize, filter, composite/overlay, and draw shapes or text) are available — import them normally. These are the ONLY third-party packages, and there is NO network access, so do not import anything else (e.g. requests, scikit-learn, plotly, contextily) — it will fail. Use print() for text output. Files live in a virtual workspace at /work/uploads/: the user's attached files are there — documents (PDF, Word) are ALREADY extracted to plain text, so just open() and read them (do NOT try to PDF-parse); data files (CSV, Excel, JSON) are as-is for pandas. IMAGES the user attached are there too as REAL image files at /work/uploads/<filename> — to edit an attached photo, open it with Pillow (from PIL import Image; im = Image.open('/work/uploads/<name>')), make the change, and im.save('/work/out/<name>') — do NOT search the user's folders for it and do NOT claim you can't find it. (Note: Pillow does pixel/colour edits, not semantic object selection — to repaint a specific object like 'the building' while keeping the rest of the photo, use the generate_image tool's source_image edit mode instead.) SAVE any output (files, charts) to /work/out/ (kept for the user). To hand BULK DATA to a create_artifact page (route polylines, coordinate lists, big tables) write it to /work/artifacts/<name>.json instead — those files are NOT saved to the user's disk and are NOT printed back to you; you then reference them in the HTML as {{data:<name>.json}}. Always prefer that over print()ing the values and copying them into the HTML yourself. Your /work files (and Python variables) PERSIST across run_python calls within the same turn — a chart PNG you saved in one call is still there in the next — and reset only when the user sends a new message. So you can build a task up across calls (e.g. generate chart PNGs in one call, then read them to build a PowerPoint in another). (For a plain read/summary of a document with no computation, prefer the read_file tool — no code or permission needed.) Use normal Python I/O — open(), pathlib, pd.read_csv('/work/uploads/data.csv'). TO SHOW A GRAPH, build a matplotlib figure (e.g. `import matplotlib.pyplot as plt; plt.plot(x, y)`) — it is rendered INLINE in the chat automatically — you do NOT need to save it (do NOT hand-draw ASCII or SVG). Only use plt.savefig('/work/out/name.png') if the user explicitly wants a saved file — /work/out is an in-memory scratch path, but anything you write there is copied to a real folder on the user's disk and the tool result reports that real absolute path. When telling the user where a file was saved, quote the real path from the tool result (the line marked SAVED TO DISK); NEVER tell the user the file is at /work/out (they cannot open that). No network access. Do not read/write paths outside /work.", parameters: { type: "object", properties: { code: { type: "string", description: "The Python source code to execute." } }, required: ["code"] } } },
+  { type: "function", function: { name: "create_artifact", description: "Render a rich, self-contained HTML page inline in the chat, with a Save button (saves as a .html file the user can open in any browser). Use this for polished deliverables — formatted reports, dashboards, styled tables/cards, or simple interactive views — when plain markdown isn't enough. The HTML MUST be fully self-contained: inline all CSS in a <style> tag and any JS in a <script> tag; NO external URLs, fonts, images, or CDNs (they are blocked) — EXCEPT for maps, where you MAY load Leaflet from unpkg/jsdelivr and OpenStreetMap/Mapbox map tiles (use these to draw a street map with real data points). To include a chart, map or image you generated earlier THIS TURN (e.g. a matplotlib chart from run_python, a map, or a photo from generate_image — great for building an image slide deck), use the placeholder token as the image source: <img src=\"{{figure:1}}\"> for the first such image, {{figure:2}} for the second, and so on (in the order they were created) — LexiChat substitutes the real image. To include an image the USER ATTACHED this turn (e.g. a logo or a photo to place on slides), reference it as <img src=\"{{upload:1}}\"> for the first attached image, {{upload:2}} for the second, etc. (in attachment order) — LexiChat substitutes it. Do NOT paste base64 image data yourself. Any other images must be data: URIs. To embed BULK DATA (a route polyline, a coordinate list, a long table) that you produced in run_python, do NOT retype the values into this HTML — that is slow and loses points. Instead write the data to /work/artifacts/<name>.json in run_python, then put the token {{data:<name>.json}} where the values go, e.g. <script>const DATA = {{data:route.json}};</script>. LexiChat splices in the exact file contents. It renders in a sandboxed frame. Do NOT put your final prose answer inside the artifact — write a short summary in chat and put the rich content in the artifact. To show ANY HTML (a page, a map, a dashboard) you MUST call THIS tool with the HTML — NEVER paste raw HTML, a <script>, or an <iframe> into your chat reply, which renders as source text, not a page.", parameters: { type: "object", properties: { title: { type: "string", description: "Short title for the artifact (used as the saved filename and header)." }, html: { type: "string", description: "A complete, self-contained HTML document (or fragment) with all CSS/JS inlined and no external resources." } }, required: ["title", "html"] } } },
   { type: "function", function: { name: "generate_image", description: "Generate an image from a text description, OR edit an image the user attached, using the local offline image model (stable-diffusion). Use it whenever the user asks you to create, draw, generate, illustrate, paint, or make an image — and ALSO when they ask you to edit, restyle, or repaint an attached photo (e.g. 'make the building in this photo pink'): for that, pass source_image. The result is displayed inline automatically — refer to it as \"shown above\"; do NOT output an image URL or a markdown image. To put a result into a SLIDE DECK or document: embed it in a create_artifact HTML slide via its placeholder <img src=\"{{figure:N}}\"> (N = the order it was generated), OR read it in run_python from the path the tool result reports (/work/data/generated_image_N.png) and add it to a .pptx with python-pptx add_picture. You do NOT need to re-generate images to reuse them. Note: source_image edits the WHOLE image toward the prompt (image-to-image) — great for recolouring/restyling a scene or object while keeping the composition, but NOT pixel-exact; for precise deterministic edits (exact colour swap, crop, overlay text) use run_python with Pillow instead.", parameters: { type: "object", properties: { prompt: { type: "string", description: "A detailed description of the image to create — or, when editing, of the desired end result (describe the whole scene as it should look after the edit, e.g. 'a street with the foreground building painted pink')." }, negative_prompt: { type: "string", description: "Things to avoid in the image (optional)." }, source_image: { type: "string", description: "To EDIT an attached image instead of creating a new one: the /work/uploads/<filename> path of the image the user attached to this message. Omit to generate from scratch. Only attached images can be used." }, strength: { type: "number", description: "Edit strength for source_image, 0.0–1.0 (optional, default 0.6, or 0.85 with mask_regions). Lower stays closer to the original; higher diverges more. Ignored without source_image." }, mask_regions: { type: "string", description: "To change ONLY part of source_image and keep the rest pixel-identical (e.g. 'the building', 'the sky'): region(s) as normalized (0..1) shapes separated by ';' — 'rect x y w h' or 'ellipse cx cy rx ry'. Estimate the region from the image you can see, e.g. 'rect 0 0.35 0.45 0.65'. If the user painted a region on the image it is used automatically (omit this). Omit to edit the whole image." }, size: { type: "integer", description: "New images: square size in px (512/768/1024). When editing: caps the longer edge; original aspect ratio is kept (optional)." }, steps: { type: "integer", description: "Sampling steps; Turbo models want ~4 (optional)." }, seed: { type: "integer", description: "Seed for reproducibility (optional)." } }, required: ["prompt"] } } },
 ];
 
@@ -439,6 +439,28 @@ function migrateToRegistry(raw: any): any {
   return result;
 }
 
+// Drop enabled-IDs that point at registry entries which no longer exist. A profile keeps only
+// references (see Profile scoping), so deleting a spec/server/endpoint leaves dead ids behind in
+// every profile that had it enabled — observed: a TFL profile listing 19 enabled specs of which 4
+// resolved to nothing. They're invisible in the UI (nothing to render) but they make the profile
+// look bigger than it is and survive every export/import round-trip. Pure cleanup: an id that
+// matches nothing already contributes no tools.
+function pruneDanglingEnabledIds(s: AppSettings): AppSettings {
+  const live = (xs: { id: string }[] | undefined) => new Set((xs ?? []).map(x => x.id));
+  const specs = live(s.toolRegistry?.openapiSpecs);
+  const mcp = live(s.toolRegistry?.mcpServers);
+  const sparql = live(s.toolRegistry?.sparqlEndpoints);
+  return {
+    ...s,
+    profiles: s.profiles.map(p => ({
+      ...p,
+      enabledOpenapiSpecIds: p.enabledOpenapiSpecIds.filter(id => specs.has(id)),
+      enabledMcpServerIds: p.enabledMcpServerIds.filter(id => mcp.has(id)),
+      enabledSparqlEndpointIds: p.enabledSparqlEndpointIds.filter(id => sparql.has(id)),
+    })),
+  };
+}
+
 export function loadSettings(): AppSettings {
   try {
     const s = localStorage.getItem("lexi_settings");
@@ -471,8 +493,9 @@ export function loadSettings(): AppSettings {
       enabledSparqlEndpointIds: p.enabledSparqlEndpointIds ?? [],
     }));
     // Collapse any content-duplicate registry entries (e.g. the same API imported twice with
-    // different ids) and remap profile references onto the survivor.
-    return dedupeRegistry(loaded);
+    // different ids) and remap profile references onto the survivor. Prune AFTER that, so an id
+    // dedupeRegistry is about to remap isn't mistaken for a dead one.
+    return pruneDanglingEnabledIds(dedupeRegistry(loaded));
   } catch { return { ...DEFAULT_SETTINGS, toolRegistry: { mcpServers: [], openapiSpecs: [...BUILTIN_OPENAPI_SPECS], sparqlEndpoints: [...BUILTIN_SPARQL_ENDPOINTS] } }; }
 }
 
@@ -599,6 +622,38 @@ function collectTurnUploads(msgs: ChatMessage[]): string[] {
 }
 function substituteUploads(html: string, ups: string[]): string {
   return html.replace(/\{\{upload:(\d+)\}\}/g, (_whole, n) => ups[Number(n) - 1] ?? MISSING_FIGURE_URL);
+}
+
+// Replace `{{data:name.json}}` tokens in artifact HTML with the text run_python wrote to
+// /work/artifacts/name.json. This is what keeps bulk data OUT of the model's context: without it a
+// model wanting a 520-point route polyline in a Leaflet map has to retype ~17,000 characters of
+// coordinates into the create_artifact argument — which is both minutes of generation on a local
+// model AND lossy (observed: it silently dropped two of three legs). Now it writes the file in
+// Python and references it by name, so the exact bytes land in the page.
+//
+// The substituted text goes into a <script> block, so it must not be able to close it: a payload
+// containing "</script>" would break out of the script and inject markup into the frame. Escape the
+// two sequences the HTML parser scans for as `<…` — valid in both a JSON string and a JS string
+// literal (unlike `<\/`, which is not legal JSON), so the data still parses either way.
+function escapeForScript(text: string): string {
+  return text
+    .replace(/<\/(script)/gi, (_m, tag: string) => `\\u003C/${tag}`)
+    .replace(/<!--/g, "\\u003C!--");
+}
+function substituteData(html: string, files: Map<string, PyDataFile>): string {
+  return html.replace(/\{\{data:([^}]+)\}\}/g, (_whole, rawName) => {
+    // Tolerate the model writing the full sandbox path rather than the bare filename.
+    const name = String(rawName).trim().replace(/^\/?(work\/)?artifacts\//, "");
+    const f = files.get(name);
+    if (!f) {
+      const known = [...files.keys()];
+      return JSON.stringify({
+        error: `No artifact data file named "${name}". ${known.length ? `Available: ${known.join(", ")}.` : "Write it to /work/artifacts/ in run_python first."}`,
+      });
+    }
+    if (f.error) return JSON.stringify({ error: f.error });
+    return escapeForScript(f.text);
+  });
 }
 
 function fmtDuration(ms: number): string {
@@ -1134,9 +1189,229 @@ export function McpAppFrame({ ui, toolName, onSend }: { ui: ToolUi; toolName: st
   );
 }
 
+// Error-reporting shim injected into every artifact. A model-authored page that throws used to
+// fail SILENTLY — the frame just sat there blank white with no clue why, for the user or for us
+// (real case: `L.marker(-0.0037)` threw "Cannot read properties of null (reading 'lat')", which
+// killed the script before fitBounds, and all anyone saw was an empty box). The frame is sandboxed
+// without allow-same-origin, so its origin is opaque and we can't read into it — but postMessage
+// out still works. Capture phase catches failed <script>/<img>/<link> loads too (those don't
+// bubble), which is how a blocked CDN or tile host announces itself.
+// Messages are matched by a per-frame TOKEN, not by comparing e.source to the iframe's
+// contentWindow: for an opaque-origin frame some engines report e.source as null, and an identity
+// check then silently drops every report — the exact failure mode that makes this shim look like
+// it "found nothing". The token also keeps several artifacts on screen from crossing wires.
+function artifactShim(token: string): string {
+  const t = JSON.stringify(token);
+  return `<script>(function(){
+  var sent = 0;
+  function post(kind, msg, extra) {
+    if (sent++ > 8) return;                       // a loop mustn't flood the parent
+    try { parent.postMessage({ __lexiArtifact: ${t}, kind: kind, message: String(msg == null ? "" : msg), detail: extra || "" }, "*"); } catch (e) {}
+  }
+  // Announce that scripts run here at all. Absence of this is itself the diagnosis: the page's
+  // JavaScript never executed, so a scripted artifact renders as a static skeleton.
+  post("ready", "", "");
+  window.addEventListener("error", function (e) {
+    var t = e.target;
+    if (t && t !== window && t.tagName) {         // a subresource failed to load
+      post("resource", (t.tagName || "").toLowerCase() + " failed to load", t.src || t.href || "");
+    } else {
+      post("error", e.message, e.lineno ? "line " + e.lineno : "");
+    }
+  }, true);
+  window.addEventListener("unhandledrejection", function (e) {
+    post("promise", (e.reason && (e.reason.message || e.reason)) || "unhandled promise rejection", "");
+  });
+  // Leaflet caches the container size at construction; if the frame is resized afterwards (the
+  // artifact frame is user-resizable) the map keeps its old size and paints nothing new. Nudge
+  // every map instance whenever the document resizes.
+  var maps = [];
+  function hookLeaflet() {
+    if (!window.L || !window.L.Map || !window.L.Map.addInitHook) return false;
+    window.L.Map.addInitHook(function () { var m = this; maps.push(m); setTimeout(function(){ try { m.invalidateSize(); } catch (e) {} }, 0); });
+    return true;
+  }
+  if (!hookLeaflet()) window.addEventListener("load", hookLeaflet);
+  function refresh() { for (var i = 0; i < maps.length; i++) { try { maps[i].invalidateSize(); } catch (e) {} } }
+  window.addEventListener("resize", refresh);
+  if (window.ResizeObserver) { try { new ResizeObserver(refresh).observe(document.documentElement); } catch (e) {} }
+})();</` + `script>`;
+}
+
+// An exception thrown inside a cross-origin script (Leaflet, from the CDN) is sanitised by the
+// browser to a bare "Script error." with no message or line — useless. Both CDNs the CSP allows
+// send `access-control-allow-origin: *`, so tagging those script elements `crossorigin="anonymous"`
+// opts them into full error reporting. Scoped to exactly those two hosts: adding it to a host that
+// does NOT send CORS headers would block the script instead.
+const CORS_SCRIPT_RE = /<script\b(?![^>]*\bcrossorigin=)([^>]*\bsrc=["'](?:https:)?\/\/(?:unpkg\.com|cdn\.jsdelivr\.net)\/[^"']*["'][^>]*)>/gi;
+export function withCorsScripts(html: string): string {
+  return html.replace(CORS_SCRIPT_RE, (_m, attrs) => `<script crossorigin="anonymous"${attrs}>`);
+}
+
+// Put the shim first inside <head> (or <body>) so it is installed before the page's own scripts and
+// external tags run. Never before <!doctype> — that would flip the document into quirks mode and
+// break the `height:100%` layout most map artifacts rely on.
+export function withErrorShim(rawHtml: string, token = "probe"): string {
+  const ARTIFACT_ERROR_SHIM = artifactShim(token);
+  const html = withCorsScripts(rawHtml);
+  const head = html.match(/<head[^>]*>/i);
+  if (head) return html.replace(head[0], head[0] + ARTIFACT_ERROR_SHIM);
+  const body = html.match(/<body[^>]*>/i);
+  if (body) return html.replace(body[0], body[0] + ARTIFACT_ERROR_SHIM);
+  const htmlTag = html.match(/<html[^>]*>/i);
+  if (htmlTag) return html.replace(htmlTag[0], htmlTag[0] + ARTIFACT_ERROR_SHIM);
+  return ARTIFACT_ERROR_SHIM + html;              // fragment, no doctype to protect
+}
+
+// The Content-Security-Policy actually in force at runtime. Tauri injects it as a meta tag from
+// tauri.conf.json (and may add nonce/hash sources of its own), so this is the only way to see what
+// the shipped app is really enforcing — the config file is not the whole story.
+export function runtimeCsp(): string {
+  const el = document.querySelector('meta[http-equiv="Content-Security-Policy" i]');
+  return el?.getAttribute("content") ?? "";
+}
+
+// Which iframe delivery mechanisms can actually execute a script in THIS webview? Observed on
+// macOS: a sandboxed srcDoc frame runs nothing at all — no error, no CSP violation we can see, just
+// a static page — so an artifact silently loses its map/chart. The cause isn't visible from the
+// config (Tauri serves the CSP as a response header on macOS, not a meta tag, so it can't even be
+// read from JS), so probe the alternatives empirically and let the result pick the mechanism.
+export type FrameProbe = { variant: string; ok: boolean };
+async function probeFrameVariant(sandbox: string | null, useBlob: boolean): Promise<boolean> {
+  return new Promise<boolean>(resolve => {
+    const token = "lexi-probe-" + Math.random().toString(36).slice(2);
+    const doc = `<!doctype html><html><head></head><body><script>` +
+      `parent.postMessage({__lexiProbe:${JSON.stringify(token)}},"*");</` + `script></body></html>`;
+    const frame = document.createElement("iframe");
+    if (sandbox !== null) frame.setAttribute("sandbox", sandbox);
+    frame.style.cssText = "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;left:-9999px";
+    let url = "";
+    const done = (ok: boolean) => {
+      window.removeEventListener("message", onMsg);
+      clearTimeout(timer);
+      frame.remove();
+      if (url) URL.revokeObjectURL(url);
+      resolve(ok);
+    };
+    const onMsg = (e: MessageEvent) => {
+      if ((e.data as { __lexiProbe?: string })?.__lexiProbe === token) done(true);
+    };
+    window.addEventListener("message", onMsg);
+    const timer = setTimeout(() => done(false), 10000);
+    if (useBlob) {
+      url = URL.createObjectURL(new Blob([doc], { type: "text/html" }));
+      frame.src = url;
+    } else {
+      frame.srcdoc = doc;
+    }
+    document.body.appendChild(frame);
+  });
+}
+
+/// Run every variant and report which can execute scripts. In PARALLEL and with a generous
+/// timeout: run sequentially with a short one at startup, every variant "failed" — including the
+/// fully permissive control, which is the signature of a starved main thread rather than a policy.
+/// A control that cannot fail is included so a run where everything reports false is recognisable
+/// as a broken measurement instead of being read as a finding.
+export async function probeFrameVariants(): Promise<FrameProbe[]> {
+  const variants: [string, string | null, boolean][] = [
+    ["sandbox+srcdoc", "allow-scripts", false],          // what artifacts use today
+    ["srcdoc-nosandbox", null, false],
+    ["sandbox+same-origin+srcdoc", "allow-scripts allow-same-origin", false],
+    ["sandbox+blob", "allow-scripts", true],
+    ["blob-nosandbox", null, true],
+  ];
+  const runs = variants.map(async ([variant, sandbox, useBlob]) =>
+    ({ variant, ok: await probeFrameVariant(sandbox, useBlob) }));
+  return Promise.all(runs);
+}
+
+/// The CSP the webview is really enforcing. On macOS/Windows Tauri returns it as a response header
+/// rather than a meta tag, so it can't be read from the DOM — but the page can re-fetch its own
+/// URL through the same protocol handler and read the header off that response.
+export async function fetchRuntimeCsp(): Promise<string> {
+  try {
+    const res = await fetch(location.href, { cache: "no-store" });
+    return res.headers.get("content-security-policy") ?? "(no CSP response header)";
+  } catch (e) {
+    return "(could not read: " + String(e) + ")";
+  }
+}
+
+// Do inline scripts actually RUN inside an artifact frame? A srcDoc iframe inherits the parent's
+// CSP, so a policy that (for example) carries a nonce silently disables 'unsafe-inline' and every
+// artifact becomes a static page: no map, no chart, and no error either — the page's own scripts
+// never execute, so nothing is left to report it. Probe it once with a throwaway frame rather than
+// reasoning about the policy string, and cache the answer for the session.
+let artifactScriptProbe: Promise<boolean> | null = null;
+export function probeArtifactScripts(): Promise<boolean> {
+  if (artifactScriptProbe) return artifactScriptProbe;
+  artifactScriptProbe = new Promise<boolean>(resolve => {
+    if (typeof document === "undefined") { resolve(true); return; }
+    const token = "lexi-probe-" + Math.random().toString(36).slice(2);
+    const frame = document.createElement("iframe");
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.style.cssText = "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;left:-9999px";
+    const done = (ok: boolean) => {
+      window.removeEventListener("message", onMsg);
+      clearTimeout(timer);
+      frame.remove();
+      resolve(ok);
+    };
+    const onMsg = (e: MessageEvent) => {
+      if ((e.data as { __lexiProbe?: string })?.__lexiProbe === token) done(true);
+    };
+    window.addEventListener("message", onMsg);
+    const timer = setTimeout(() => done(false), 10000);   // generous: a busy main thread must not read as 'blocked'
+    frame.srcdoc = `<!doctype html><html><head></head><body><script>` +
+      `parent.postMessage({__lexiProbe:${JSON.stringify(token)}},"*");</` + `script></body></html>`;
+    document.body.appendChild(frame);
+  });
+  return artifactScriptProbe;
+}
+
 // Model-authored HTML artifact (create_artifact) — rendered inline in a sandboxed frame with a
 // Save button. Static-or-scripted HTML; sandbox allows scripts but not same-origin/network.
 function ArtifactFrame({ title, html }: { title: string; html: string }) {
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [errors, setErrors] = useState<{ kind: string; message: string; detail: string }[]>([]);
+  const [scriptsRan, setScriptsRan] = useState<boolean | null>(null);
+  // One token per mounted frame, so reports are attributed by value rather than by comparing
+  // window identities (see artifactShim).
+  const token = useMemo(() => "lexi-art-" + Math.random().toString(36).slice(2), []);
+  const shimmed = useMemo(() => withErrorShim(html, token), [html, token]);
+  useEffect(() => {
+    const onMsg = (e: MessageEvent) => {
+      const d = e.data as { __lexiArtifact?: string; kind?: string; message?: string; detail?: string };
+      if (d?.__lexiArtifact !== token) return;
+      if (d.kind === "ready") { setScriptsRan(true); return; }
+      setErrors(prev => {
+        const next = { kind: d.kind ?? "error", message: d.message ?? "", detail: d.detail ?? "" };
+        if (prev.some(p => p.message === next.message && p.detail === next.detail)) return prev;
+        return [...prev, next];
+      });
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, [token]);
+  // No "ready" ping shortly after mount means the page's scripts never executed at all.
+  useEffect(() => {
+    setScriptsRan(null);
+    if (!/<script/i.test(html)) return;
+    const t = setTimeout(() => setScriptsRan(v => (v === null ? false : v)), 12000);
+    return () => clearTimeout(t);
+  }, [html]);
+  // A re-render with different HTML is a different page — drop the old page's errors.
+  useEffect(() => { setErrors([]); }, [html]);
+  // If artifact frames can't run scripts at all, a scripted page renders as a static skeleton with
+  // nothing to explain it. Detect that and say so, rather than leaving a blank box.
+  const [scriptsBlocked, setScriptsBlocked] = useState(false);
+  useEffect(() => {
+    let live = true;
+    if (/<script/i.test(html)) probeArtifactScripts().then(ok => { if (live && !ok) setScriptsBlocked(true); });
+    return () => { live = false; };
+  }, [html]);
+
   const saveArtifact = async () => {
     const safe = title.replace(/[^a-z0-9_-]+/gi, "_").replace(/^_+|_+$/g, "").slice(0, 60) || "artifact";
     try {
@@ -1152,7 +1427,34 @@ function ArtifactFrame({ title, html }: { title: string; html: string }) {
         <span className="artifact-title">▤ {title}</span>
         <button className="artifact-save" onClick={saveArtifact}>Save HTML…</button>
       </div>
-      <iframe className="artifact-frame" sandbox="allow-scripts" srcDoc={html} title={`artifact-${title}`} />
+      <iframe ref={iframeRef} className="artifact-frame" sandbox="allow-scripts"
+        srcDoc={shimmed} title={`artifact-${title}`} />
+      {(scriptsRan === false || scriptsBlocked) && (
+        <div className="artifact-errors">
+          <span className="artifact-errors-title">⚠ Scripts are blocked inside artifacts</span>
+          <div className="artifact-error-row">
+            This page's JavaScript never ran, so anything it draws (maps, charts, interactivity) is
+            missing. The frame inherits the app's content-security policy, which is currently
+            disallowing inline scripts.
+          </div>
+          <div className="artifact-error-row"><code>{runtimeCsp()
+            || "CSP is delivered as a response header on macOS/Windows, so it cannot be read here."}</code></div>
+          <div className="artifact-error-hint">Saving the HTML and opening it in a browser will still work.</div>
+        </div>
+      )}
+      {errors.length > 0 && (
+        <div className="artifact-errors">
+          <span className="artifact-errors-title">⚠ This page reported {errors.length === 1 ? "an error" : `${errors.length} errors`}</span>
+          {errors.map((e, i) => (
+            <div key={i} className="artifact-error-row">
+              <code>{e.message}</code>{e.detail && <span className="artifact-error-detail"> — {e.detail}</span>}
+            </div>
+          ))}
+          <div className="artifact-error-hint">
+            Part of the page may be missing. Ask for it to be fixed and mention this message.
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1597,6 +1899,14 @@ export default function App() {
   const profileSwitchRef = useRef<((id: string) => Promise<void>) | null>(null);
   const handleResetRef = useRef<(() => Promise<void>) | null>(null);
   const forceAllowCodeToolsRef = useRef(false); // dev-control transient override for allow_code_tools
+  // Text payloads run_python wrote to /work/artifacts THIS turn, keyed by filename, backing the
+  // `{{data:name}}` token in create_artifact HTML. Held here rather than on a message because the
+  // content deliberately never round-trips through the backend or the model — only the name does.
+  // Cleared at the start of every turn (see send()), so a token can only reach this turn's data.
+  const turnDataFilesRef = useRef<Map<string, PyDataFile>>(new Map());
+  // Result of the artifact inline-script probe, surfaced in /dev/state for headless diagnosis.
+  const artifactProbeResultRef = useRef<boolean | null>(null);
+  const artifactFrameProbesRef = useRef<FrameProbe[] | null>(null);
   messagesRef.current = messages;
   isRunningRef.current = isRunning;
   settingsRef.current = settings;
@@ -1685,6 +1995,24 @@ export default function App() {
 
     // Pre-load the Python runtime so the first run_python (or a scheduled job) isn't cold.
     warmPyodide();
+    // Run the artifact script probe once at startup so /dev/state can report it without waiting
+    // for an artifact to be rendered.
+    probeArtifactScripts().then(ok => { artifactProbeResultRef.current = ok; });
+    // Leave the frame-mechanism findings on disk — the shipped app has no dev-control server, and
+    // this can only be measured inside the real webview.
+    // Deferred: at startup this competes with Pyodide warm-up and history loading, and a starved
+    // main thread makes every variant look like it failed.
+    const diagTimer = setTimeout(() => {
+      Promise.all([probeFrameVariants(), fetchRuntimeCsp()]).then(([results, csp]) => {
+        artifactFrameProbesRef.current = results;
+        invoke("write_diagnostics", {
+          name: "artifact-frame-probe.json",
+          content: JSON.stringify(
+            { at: new Date().toISOString(), ua: navigator.userAgent, csp, results }, null, 2),
+        }).catch(() => {});
+      });
+    }, 4000);
+    cleanup.push(() => clearTimeout(diagTimer));
 
     listen<{ delta: string }>("agent-token", e => {
       if (!streamActive()) return;
@@ -1766,6 +2094,10 @@ export default function App() {
         if (artifact?.html && artifact.html.includes("{{upload:")) {
           artifact = { ...artifact, html: substituteUploads(artifact.html, collectTurnUploads(prev)) };
         }
+        // {{data:name}} — bulk text run_python staged to /work/artifacts this turn.
+        if (artifact?.html && artifact.html.includes("{{data:")) {
+          artifact = { ...artifact, html: substituteData(artifact.html, turnDataFilesRef.current) };
+        }
         return [...closed, {
           id: uid(), role: "tool-result",
           text: e.payload.result,
@@ -1839,9 +2171,14 @@ export default function App() {
     // worker (WASM CPython in the webview) and send the result back.
     listen<{ request_id: number; code: string; files: PyFile[]; reset?: boolean }>("run-python-request", async e => {
       const res = await runPython(e.payload.code, e.payload.files ?? [], e.payload.reset !== false);
+      // Anything staged to /work/artifacts stays HERE, keyed by name, for {{data:name}} in a later
+      // create_artifact call this turn. Only the names go on to the backend (and so to the model) —
+      // shipping the content would reintroduce exactly the context bloat this avoids.
+      for (const f of res.dataFiles ?? []) turnDataFilesRef.current.set(f.name, f);
       await invoke("respond_python_result", { args: {
         request_id: e.payload.request_id,
         output: res.output, error: res.error, images: res.images, out_files: res.outFiles,
+        data_files: (res.dataFiles ?? []).map(f => ({ name: f.name, chars: f.text.length, error: f.error ?? null })),
       } }).catch(() => {});
     }).then(u => cleanup.push(u));
 
@@ -1860,6 +2197,11 @@ export default function App() {
         reasoning: cp?.reasoning ?? "auto",
         numCtx: cp?.numCtx ?? null,
         allowCodeTools: !!ap?.allowCodeTools || forceAllowCodeToolsRef.current,
+        // Webview environment, for diagnosing artifacts that render as blank/static: the CSP that
+        // is really in force, and whether an artifact frame can execute scripts under it.
+        csp: runtimeCsp(),
+        artifactScriptsRun: artifactProbeResultRef.current,
+        artifactFrameProbes: artifactFrameProbesRef.current,
         profiles: s.profiles.map(p => ({
           id: p.id, name: p.name, model: p.model,
           allowCodeTools: !!p.allowCodeTools, maxTools: p.maxTools,
@@ -2016,6 +2358,10 @@ export default function App() {
   const send = async (text: string) => {
     text = text.trim();
     if ((!text && attachedFiles.length === 0) || isRunning || !selectedModel) return;
+
+    // New turn: drop last turn's /work/artifacts payloads. The sandbox wipes /work on the first
+    // run_python of a turn, so a stale {{data:name}} must resolve to a clear error, not old data.
+    turnDataFilesRef.current = new Map();
 
     // Profile overrides global settings; chatParams toggles can further restrict
     const effectiveEnabledTools = activeProfile?.enabledTools ?? settings.enabledTools;
@@ -2176,7 +2522,7 @@ export default function App() {
       // real streets AND the markers; geopandas has no street basemap (points on blank). The #1
       // failure is the model plotting placeholder/made-up coordinates instead of the real ones.
       const mapRulesSuffix = runPythonMaster
-        ? "\n\nSTREET MAPS WITH DATA POINTS: to show points on a street map (crime locations, incidents, places), create an INTERACTIVE map with create_artifact using Leaflet + OpenStreetMap tiles (the artifact may load OSM tiles and the Leaflet library) and plot the points as markers. CRITICAL: use the REAL lat/lng from the tool result for EVERY point — NEVER placeholder, example, sample, or made-up coordinates. First extract the exact points in run_python from the actual API response (print them as a JSON array of {lat, lng, label}), then embed THOSE exact points in the map's script and set the view to fit them. Do NOT use geopandas/matplotlib for a street map — it has no basemap and renders points on a blank background (use it only for boundary/choropleth plots). Build the whole map in ONE create_artifact call. CRITICAL: the map HTML must be passed to the create_artifact TOOL — never write HTML, a <script>, or an <iframe> into your chat message (HTML in your reply shows as raw source, NOT a rendered map), and the artifact HTML holds the Leaflet map DIRECTLY (do not wrap it in an inner <iframe>)."
+        ? "\n\nSTREET MAPS WITH DATA POINTS: to show points on a street map (crime locations, incidents, places), create an INTERACTIVE map with create_artifact using Leaflet + OpenStreetMap tiles (the artifact may load OSM tiles and the Leaflet library) and plot the points as markers. CRITICAL: use the REAL lat/lng from the tool result for EVERY point — NEVER placeholder, example, sample, or made-up coordinates. First extract the exact points in run_python from the actual API response and WRITE them to /work/artifacts/points.json (print only a count and a first/last sanity check, never the whole array); then in the map's script write `const points = {{data:points.json}};` — LexiChat splices the exact file in. NEVER retype coordinates into the HTML: it takes minutes and drops points. For a ROUTE, write one entry per leg and draw each leg as its own coloured polyline so no leg is missing, and call fitBounds ONCE over all legs at the end (not inside the loop). COORDINATE ORDER IS CRITICAL: Leaflet takes [lat, lng] — latitude FIRST. Store points that way and pass them straight through (never [c[1], c[0]]); TfL lineString data is already [lat, lng], so do NOT convert it to GeoJSON [lng, lat]. Sanity-check in run_python before writing the file — for the UK every point needs -11 < lng < 3 and 49 < lat < 61. Use L.circleMarker rather than L.marker (the default marker icon is a remote PNG the artifact sandbox blocks on Windows/Linux). For the start/end markers take the first and last COORDINATE, not the first/last leg index: `const start = legs[0].pts[0], end = legs[legs.length-1].pts.slice(-1)[0];` — indexing pts by the leg number yields a bare number and Leaflet then throws, which kills the rest of the script and leaves the map blank. Do NOT use geopandas/matplotlib for a street map — it has no basemap and renders points on a blank background (use it only for boundary/choropleth plots). Build the whole map in ONE create_artifact call. CRITICAL: the map HTML must be passed to the create_artifact TOOL — never write HTML, a <script>, or an <iframe> into your chat message (HTML in your reply shows as raw source, NOT a rendered map), and the artifact HTML holds the Leaflet map DIRECTLY (do not wrap it in an inner <iframe>)."
         : "";
 
       // Code-mode: when the profile allows code to call tools, tell the model about the Python API.

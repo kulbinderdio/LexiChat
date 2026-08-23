@@ -115,16 +115,42 @@ can't phone home or pull remote code.
 **Deliberate exception — map tiles + Leaflet** (added for interactive street maps with plotted data):
 the CSP allows a *scoped* set of hosts — `img-src`/`connect-src` for `*.tile.openstreetmap.org`,
 `*.basemaps.cartocdn.com`, `api.mapbox.com`, `*.tiles.mapbox.com`; `script-src`/`style-src` for
-`unpkg.com` and `cdn.jsdelivr.net` (the Leaflet CDN). This is what lets an artifact render a real
+`unpkg.com` and `cdn.jsdelivr.net` (the Leaflet CDN). Those two CDNs are in `img-src` too, because
+Leaflet's default `L.marker` icon is a PNG it pulls from its own dist directory — without that a
+plain `L.marker()` map shows no pins at all on Windows/Linux (the macOS quirk below hides the bug).
+This is what lets an artifact render a real
 OSM/Mapbox basemap with markers. **Trade-off:** it loosens the artifact sandbox — an artifact can now
 fetch tiles from those hosts and load Leaflet from those CDNs. Scoped to those reputable hosts, and the
 iframe stays same-origin-isolated (no access to app state), so the blast radius is small, but it IS an
 intentional relaxation. Keep the allow-list minimal; do not broaden it casually.
 
-**Platform nuance:** on macOS (WKWebView) a sandboxed `srcDoc` iframe does NOT inherit the parent CSP,
-so external tiles/scripts load in artifacts even without the allow-list; on Windows/Linux (WebView2 /
-Chromium) the CSP IS inherited and enforced. The allow-list above is what makes maps work consistently
-across all three — don't rely on the WKWebView quirk.
+**CSP inheritance — measured, not assumed.** A `srcDoc` iframe (and a `blob:` one) **does** inherit the
+creator's CSP, on macOS/WKWebView included. An earlier note here claimed macOS did not; that was wrong
+and cost a long debugging session. A document loaded from a real URL is the only kind that gets its own
+policy instead of inheriting.
+
+**`dangerousDisableAssetCspModification: ["script-src"]` is load-bearing — do not remove it.**
+At compile time Tauri rewrites `script-src`, adding `'self'` plus a sha256 hash per inline script it
+injects. Per the CSP spec, **once any hash or nonce source is present, `'unsafe-inline'` is ignored**.
+The observed effect: our config says `'unsafe-inline'`, the shipped app enforced
+`script-src 'self' … 'sha256-…'×5`, and so **every artifact's inline `<script>` silently did not run** —
+maps and charts rendered as static skeletons with no error anywhere, because the page's own error
+handlers never executed either. The flag stops that rewrite so the configured `'unsafe-inline'` means
+what it says. Verify with the frame probe below, not by reading the config: the config is not the
+policy.
+
+**Trade-off:** the main document loses hash-pinning of its scripts, so inline script and inline event
+handlers (`<img onerror=…>`) would execute there. That is acceptable *only* because the app never
+injects raw HTML — there is no `dangerouslySetInnerHTML` and no `innerHTML =` anywhere in `src/`, so
+model output reaches the DOM as escaped React text. **If you ever add raw-HTML rendering, this
+combination becomes an XSS-to-IPC path and must be revisited** — the principled alternative is to serve
+artifacts from a custom URI scheme with their own CSP response header, keeping the main document pinned.
+
+**Diagnosing a blank/static artifact:** the app writes
+`<data-dir>/artifact-frame-probe.json` a few seconds after launch, recording the *real* runtime CSP
+(re-fetched from its own URL, since on macOS/Windows Tauri sends CSP as a response header and it cannot
+be read from the DOM) and whether each iframe delivery mechanism can execute a script. `ArtifactFrame`
+also injects a shim that postMessages a `ready` ping plus any errors; no ping means scripts never ran.
 
 ## State persistence
 

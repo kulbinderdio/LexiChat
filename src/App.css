@@ -431,6 +431,21 @@ html, body, #root { height: 100%; overflow: hidden; }
   resize: vertical; overflow: auto;
 }
 
+/* A model-authored artifact that throws used to fail silently (blank white frame). The shim in
+   ArtifactFrame posts the error out of the sandboxed iframe; this renders it under the frame. */
+.artifact-errors {
+  border-top: 1px solid var(--border);
+  background: rgba(217, 48, 37, 0.10);
+  padding: 8px 12px; font-size: 12px; display: flex; flex-direction: column; gap: 4px;
+}
+.artifact-errors-title { font-weight: 600; color: #ef4444; }
+.artifact-error-row code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+  word-break: break-word;
+}
+.artifact-error-detail { color: var(--text-tertiary); }
+.artifact-error-hint { color: var(--text-tertiary); font-size: 11px; }
+
 /* Report preview modal */
 .report-preview-modal {
   display: flex; flex-direction: column; width: min(940px, 94vw); height: min(88vh, 1000px);

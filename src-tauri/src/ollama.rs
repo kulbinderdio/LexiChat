@@ -1159,14 +1159,35 @@ async fn ensure_final_answer<R: tauri::Runtime>(
     }
 }
 
+/// Rough token count for a string, without a tokenizer.
+///
+/// The obvious `len / 4` is badly wrong for the payloads that actually blow the context. Prose does
+/// sit near 4 chars/token, but digit-dense data does NOT: a route polyline or a coordinate-heavy API
+/// response tokenises at ~1 char/token, because tokenizers split long decimal runs into 1–2 digit
+/// pieces. Measured on real TfL journey data with qwen3: a 17,249-char coordinate array is 16,088
+/// tokens, which `len / 4` estimates at 4,312 — 3.7× low. That under-count is what let an oversized
+/// wire sail past the budget check below and get FRONT-TRUNCATED by Ollama instead.
+///
+/// So bucket the characters instead and weight each class. Weights were fitted against real
+/// `prompt_eval_count` values for 13 samples spanning prose, JSON, source code and raw coordinates
+/// (1.07–4.12 chars/token); worst-case error is ~9%, against ~73% for `len / 4`. Integer arithmetic,
+/// one pass, no allocation — cheap enough to run on every message every step.
+pub fn estimate_tokens(s: &str) -> usize {
+    let (mut digits, mut alpha, mut other) = (0usize, 0usize, 0usize);
+    for c in s.chars() {
+        if c.is_ascii_digit() { digits += 1 } else if c.is_alphabetic() { alpha += 1 } else { other += 1 }
+    }
+    // ×100 to keep this in integers: digits ≈ 1.05 tok, letters ≈ 0.21 tok, everything else ≈ 0.45.
+    (digits * 105 + alpha * 21 + other * 45) / 100
+}
+
 /// Keep the per-step wire within `num_ctx` so the backend never truncates the FRONT of the prompt
 /// — which is the system prompt and the user's task. A long tool-heavy run accumulates large tool
 /// results; once the wire exceeds the context window Ollama silently drops the oldest messages and
 /// the model loses its instructions mid-run (observed: it loops or asks the user to restate). Rather
 /// than delete messages (which would orphan a tool result from its assistant tool-call and make the
 /// wire malformed), we shrink the CONTENT of the oldest tool results in place, oldest first, always
-/// protecting the system prompt, every user message, and the most recent messages. Token counts are
-/// a rough chars/4 estimate with generous headroom, so exact tokenisation isn't needed. Returns the
+/// protecting the system prompt, every user message, and the most recent messages. Returns the
 /// number of tool results elided (for logging/tests).
 fn fit_wire_to_context(
     wire: &mut [WireMessage],
@@ -1176,8 +1197,8 @@ fn fit_wire_to_context(
 ) -> usize {
     if num_ctx <= 0 { return 0; }
     let ctx = num_ctx as usize;
-    let tok = |s: &str| s.len() / 4;
-    // Reserve room for the model's reply plus slack for the chars/4 estimate and chat-template
+    let tok = estimate_tokens;
+    // Reserve room for the model's reply plus slack for the estimate and chat-template
     // framing overhead, so we trim before we're actually at the edge.
     let response_reserve = match num_predict { Some(n) if n > 0 => n as usize, _ => 4096 };
     let budget = ctx.saturating_sub(response_reserve + ctx / 8);
@@ -1198,14 +1219,41 @@ fn fit_wire_to_context(
         "[earlier tool result omitted to keep within the context window — call the tool again if you still need this data]";
     let cutoff = wire.len().saturating_sub(KEEP_RECENT);
     let mut elided = 0usize;
+    let elide_at = |m: &mut WireMessage, total: &mut usize, text: &'static str| {
+        let before = m.content.as_deref().map(tok).unwrap_or(0);
+        m.content = Some(text.to_string());
+        *total = total.saturating_sub(before.saturating_sub(tok(text)));
+    };
     for m in wire.iter_mut().take(cutoff) {
         if total <= budget { break; }
         if m.role != "tool" { continue; } // never touch system / user / assistant messages
         let Some(c) = &m.content else { continue; };
         if c.len() <= PLACEHOLDER.len() + 40 { continue; } // already small — not worth eliding
-        let before = tok(c);
-        m.content = Some(PLACEHOLDER.to_string());
-        total = total.saturating_sub(before.saturating_sub(tok(PLACEHOLDER)));
+        elide_at(m, &mut total, PLACEHOLDER);
+        elided += 1;
+    }
+    if total <= budget { return elided; }
+
+    // Still over. One ENORMOUS result inside the protected recent window can hold the wire over
+    // budget by itself — the exact shape that broke a route map: a 16k-token coordinate dump sat
+    // 3rd from the end, so the oldest-first pass above could never reach it and the wire got
+    // front-truncated instead (losing the system prompt and the user's task). Those payloads are
+    // precisely the ones `offload_tool_result` already wrote to /work/data, so dropping one from
+    // the prompt costs little — the model can re-read it with run_python. Only genuinely huge
+    // results qualify, and never the LAST message: that's the result the model just asked for and
+    // is about to act on.
+    const HUGE_TOOL_RESULT_TOKENS: usize = 4096;
+    const HUGE_PLACEHOLDER: &str =
+        "[a very large tool result was omitted here to keep within the context window. If it was \
+         offloaded to /work/data, read it with run_python; otherwise call the tool again.]";
+    let last = wire.len().saturating_sub(1);
+    for (i, m) in wire.iter_mut().enumerate() {
+        if total <= budget { break; }
+        if i < cutoff || i == last { continue; } // older ones already handled; keep the newest
+        if m.role != "tool" { continue; }
+        let Some(c) = &m.content else { continue; };
+        if tok(c) <= HUGE_TOOL_RESULT_TOKENS { continue; }
+        elide_at(m, &mut total, HUGE_PLACEHOLDER);
         elided += 1;
     }
     elided
@@ -2511,6 +2559,63 @@ mod tests {
             name: name.map(str::to_string),
             images: None,
         }
+    }
+
+    /// A coordinate polyline is the payload that broke this: `len / 4` called a 17k-char route
+    /// array 4.3k tokens when it was really 16k, so an oversized wire slipped past the budget and
+    /// Ollama front-truncated the system prompt. Both real counts below are measured
+    /// `prompt_eval_count` values from qwen3 on the actual TfL journey that failed.
+    #[test]
+    fn estimate_tokens_tracks_real_counts_for_prose_and_coordinate_data() {
+        let coords: String = std::iter::repeat("[51.44134339536, 0.36633931267], ")
+            .take(523).collect::<String>();   // ≈17,259 chars, measured at ~16,088 tokens
+        let est = estimate_tokens(&coords);
+        assert!((14_500..=17_500).contains(&est), "coordinate estimate {est} should be near 16k");
+        // The old chars/4 rule is the bug this replaces — it lands nowhere near.
+        assert!(coords.len() / 4 < est / 2, "chars/4 should be the gross under-count we fixed");
+
+        // Prose still lands near the familiar ~4 chars/token, so ordinary chat isn't over-trimmed.
+        let prose = "The quick brown fox jumps over the lazy dog and then writes a short report about \
+                     everything it saw along the way, in plain English prose. ".repeat(40);
+        let ratio = prose.len() as f64 / estimate_tokens(&prose) as f64;
+        assert!((3.0..=5.0).contains(&ratio), "prose ratio {ratio:.2} should stay near 4 chars/token");
+    }
+
+    /// The failing route map in miniature: a huge tool result sits inside the protected recent
+    /// window, so the oldest-first pass can't reach it and the wire stays over budget. It must be
+    /// elided as a last resort — but never the newest result, which the model is about to use.
+    #[test]
+    fn fit_wire_to_context_elides_a_huge_result_inside_the_recent_window_but_not_the_newest() {
+        let huge = "1".repeat(60_000);   // digit-dense: ~63k tokens, way over any budget
+        let newest = "2".repeat(20_000);
+        let mut wire = vec![
+            msg("system", Some("SYSTEM"), None),
+            msg("user", Some("map the route"), None),
+            msg("assistant", Some("working"), None),
+            msg("tool", Some(&huge), Some("run_python")),      // 3rd from the end
+            msg("assistant", Some("now the map"), None),
+            msg("tool", Some(&newest), Some("run_python")),     // last — must survive
+        ];
+        let elided = fit_wire_to_context(&mut wire, &[], 32768, None);
+        assert_eq!(elided, 1, "the huge in-window result should be elided");
+        assert!(wire[3].content.as_deref().unwrap().contains("very large tool result"));
+        assert_eq!(wire[5].content.as_deref(), Some(newest.as_str()), "newest result must survive");
+        assert_eq!(wire[0].content.as_deref(), Some("SYSTEM"));
+        assert_eq!(wire[1].content.as_deref(), Some("map the route"));
+    }
+
+    /// The escape hatch must stay shut for ordinary turns: nothing in the recent window is touched
+    /// when the wire already fits, so a normal conversation keeps every tool result intact.
+    #[test]
+    fn fit_wire_to_context_leaves_a_recent_large_result_alone_when_within_budget() {
+        let big = "x".repeat(40_000); // letters: ~8.4k tokens, comfortably inside a 128k window
+        let mut wire = vec![
+            msg("system", Some("SYSTEM"), None),
+            msg("user", Some("q"), None),
+            msg("tool", Some(&big), Some("t")),
+        ];
+        assert_eq!(fit_wire_to_context(&mut wire, &[], 131072, None), 0);
+        assert_eq!(wire[2].content.as_deref(), Some(big.as_str()));
     }
 
     #[test]
