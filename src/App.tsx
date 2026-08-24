@@ -1061,7 +1061,7 @@ export function McpAppFrame({ ui, toolName, onSend }: { ui: ToolUi; toolName: st
             post({ jsonrpc: "2.0", id, result: {
               protocolVersion: "2026-01-26",
               hostCapabilities: {},
-              hostInfo: { name: "LexiChat", version: "2.4.13" },
+              hostInfo: { name: "LexiChat", version: "2.4.14" },
               hostContext: {
                 toolInfo: {
                   id: "1",
@@ -2280,6 +2280,12 @@ export default function App() {
         // The status label is transient in the UI (cleared on the first token), so record what the
         // user was actually shown while waiting.
         listen<{ phase: string }>("agent-status", e => mark(`status: ${e.payload.phase}`)),
+        listen<{ total: number; system_tokens: number; tools_tokens: number; history_tokens: number;
+                 schemas: { label: string; tokens: number }[] }>("debug-step-context", e => {
+          const p = e.payload;
+          const top = p.schemas.slice(0, 3).map(x => `${x.label} ${x.tokens}`).join(", ");
+          mark(`context ${p.total} = system ${p.system_tokens} + schemas ${p.tools_tokens} + history ${p.history_tokens} | top: ${top}`);
+        }),
         listen("agent-token", () => { if (!sawToken) { sawToken = true; mark("first token"); } }),
         listen<{ name: string }>("agent-tool-call", e => mark(`tool call: ${e.payload.name}`)),
         listen<{ name: string }>("agent-tool-result", e => { mark(`tool result: ${e.payload.name}`); sawToken = false; }),
@@ -2632,6 +2638,7 @@ export default function App() {
           tool_result_limit: activeProfile?.toolResultLimit ?? null,
           web_tool_cap: activeProfile?.webToolCap ?? null,
           allow_code_tools: forceAllowCodeToolsRef.current || (activeProfile?.allowCodeTools ?? false),
+          debug_full_context: settings.debugFullContext === true,
         }
       });
     } catch (err) {
@@ -3055,7 +3062,7 @@ export default function App() {
               Runs entirely on-device via Ollama. Reads files, searches the web,
               calls APIs, and keeps your data private.
             </p>
-            <div className="about-version">Version 2.4.13</div>
+            <div className="about-version">Version 2.4.14</div>
 
             <div className="about-support">
               <div className="about-support-label">Support the project</div>

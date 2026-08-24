@@ -3,8 +3,16 @@ import { listen, UnlistenFn } from "@tauri-apps/api/event";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+interface ContextItem { label: string; tokens: number; text?: string }
+interface StepContext {
+  total: number; num_ctx: number;
+  system_tokens: number; tools_tokens: number; history_tokens: number;
+  schemas: ContextItem[]; messages: ContextItem[];
+}
+
 interface DebugStep {
   index: number;
+  context?: StepContext;
   schemaNames: string[];
   candidateTotal?: number;
   llmText?: string;
@@ -29,6 +37,81 @@ interface DebugRun {
 }
 
 const fmtTok = (n?: number) => (n ?? 0).toLocaleString();
+const kTok = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n));
+
+// What is in the context and what each part costs. The usual finding is that most of it is tool
+// schemas the turn never uses — which is a profile setting, not something the prompt can fix.
+function ContextBreakdown({ ctx }: { ctx: StepContext }) {
+  const [open, setOpen] = useState(false);
+  const [showSchemas, setShowSchemas] = useState(false);
+  const [showMessages, setShowMessages] = useState(false);
+  const over = ctx.num_ctx > 0 && ctx.total > ctx.num_ctx;
+  const bar = (label: string, n: number, colour: string) => {
+    const pct = ctx.total > 0 ? Math.round((n / ctx.total) * 100) : 0;
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
+        <span style={{ width: 78, opacity: 0.7 }}>{label}</span>
+        <span style={{ width: 46, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{kTok(n)}</span>
+        <span style={{ flex: 1, height: 5, background: "var(--dbg-step-bg)", borderRadius: 3, overflow: "hidden" }}>
+          <span style={{ display: "block", width: `${pct}%`, height: "100%", background: colour }} />
+        </span>
+        <span style={{ width: 30, textAlign: "right", opacity: 0.5 }}>{pct}%</span>
+      </div>
+    );
+  };
+  const rows = (items: ContextItem[]) => items.map((it, i) => (
+    <details key={i} style={{ fontSize: 11 }}>
+      <summary style={{ cursor: it.text ? "pointer" : "default", listStyle: it.text ? undefined : "none",
+                        display: "flex", gap: 8, padding: "1px 0" }}>
+        <span style={{ width: 46, textAlign: "right", fontVariantNumeric: "tabular-nums", opacity: 0.65 }}>
+          {kTok(it.tokens)}
+        </span>
+        <span style={{ fontFamily: "monospace", opacity: 0.75, overflow: "hidden", textOverflow: "ellipsis",
+                       whiteSpace: "nowrap" }}>{it.label}</span>
+      </summary>
+      {it.text && (
+        <pre style={{ margin: "2px 0 6px 54px", padding: 6, background: "var(--dbg-text-bg)", borderRadius: 4,
+                      fontSize: 10, whiteSpace: "pre-wrap", wordBreak: "break-word",
+                      maxHeight: 260, overflow: "auto" }}>{it.text}</pre>
+      )}
+    </details>
+  ));
+  return (
+    <div>
+      <button onClick={() => setOpen(o => !o)}
+        style={{ background: "none", border: "none", cursor: "pointer", padding: "2px 0", fontSize: 11,
+                 color: over ? "#e0a458" : "var(--dbg-schemas-color)", display: "flex", alignItems: "center", gap: 4 }}>
+        <span style={{ fontSize: 9 }}>{open ? "▼" : "▶"}</span>
+        Context {kTok(ctx.total)} tokens
+        {over && ` — over the ${kTok(ctx.num_ctx)} limit, re-read each step`}
+      </button>
+      {open && (
+        <div style={{ paddingLeft: 14, paddingBottom: 4, display: "flex", flexDirection: "column", gap: 3 }}>
+          {bar("system", ctx.system_tokens, "#7c8cf8")}
+          {bar("schemas", ctx.tools_tokens, "#e0a458")}
+          {bar("history", ctx.history_tokens, "#5bb98c")}
+          <button onClick={() => setShowSchemas(v => !v)}
+            style={{ background: "none", border: "none", cursor: "pointer", padding: "3px 0", fontSize: 11,
+                     opacity: 0.75, textAlign: "left" }}>
+            {showSchemas ? "▼" : "▶"} {ctx.schemas.length} schemas, largest first
+          </button>
+          {showSchemas && <div>{rows(ctx.schemas)}</div>}
+          <button onClick={() => setShowMessages(v => !v)}
+            style={{ background: "none", border: "none", cursor: "pointer", padding: "3px 0", fontSize: 11,
+                     opacity: 0.75, textAlign: "left" }}>
+            {showMessages ? "▼" : "▶"} {ctx.messages.length} messages
+          </button>
+          {showMessages && <div>{rows(ctx.messages)}</div>}
+          {!ctx.schemas.some(x => x.text) && (
+            <div style={{ fontSize: 10, opacity: 0.45, paddingTop: 2 }}>
+              Sizes only. Turn on “Capture full context” in Settings to see the text itself.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 // token badge (in ↑ / out ↓) shown on a run header or step row
 function TokenBadge({ tin, tout }: { tin?: number; tout?: number }) {
   if ((tin ?? 0) === 0 && (tout ?? 0) === 0) return null;
@@ -75,6 +158,7 @@ function StepRow({ step, isLast }: { step: DebugStep; isLast: boolean }) {
 
       {open && (
         <div style={{ paddingLeft: 8, paddingTop: 4, display: "flex", flexDirection: "column", gap: 4 }}>
+          {step.context && <ContextBreakdown ctx={step.context} />}
           {/* Schemas */}
           {step.schemaNames.length > 0 && (
             <div>
@@ -298,6 +382,13 @@ export function DebugPanel({ visible, clearKey }: Props) {
           const next = [...prev]; next[i] = run; return next;
         });
       }));
+
+      unsubs.push(await listen<StepContext & { run_id: number; step: number }>("debug-step-context", ({ payload }) =>
+        updateRun(payload.run_id, run => {
+          const j = run.steps.findIndex(s => s.index === payload.step);
+          if (j >= 0) run.steps[j] = { ...run.steps[j], context: payload };
+          return run;
+        })));
 
       unsubs.push(await listen<{ delta: string }>("agent-thinking", ({ payload }) =>
         updateActiveStep(s => { s.thinking = (s.thinking || "") + payload.delta; })));

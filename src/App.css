@@ -1134,6 +1134,11 @@ html, body, #root { height: 100%; overflow: hidden; }
 .admin-row-text { display: flex; flex-direction: column; gap: 1px; }
 .admin-row-title { font-size: 13px; font-weight: 500; }
 .admin-row-sub { font-size: 11px; font-family: "SF Mono", monospace; color: var(--text-tertiary); }
+/* URL-bearing subtitles only. A long endpoint URL used to wrap over many lines and push the Edit
+   and delete controls off the row; the rest of the .admin-row-sub uses are prose that should wrap. */
+.admin-row-sub.url {
+  display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+}
 
 .admin-empty {
   padding: 40px 20px;

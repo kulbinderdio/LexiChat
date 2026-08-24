@@ -138,6 +138,36 @@ pub struct RetryEvent {
     pub error: String,
 }
 
+/// One line of the context breakdown: what it is and what it costs. `text` is filled only when the
+/// user has turned on full-context capture, since verbatim history on every step of every run is
+/// tens of MB in the renderer for a long research turn.
+#[derive(Clone, Serialize)]
+pub struct ContextItem {
+    pub label: String,
+    pub tokens: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+/// What is actually being sent to the model this step, and what each part costs. "Reading 9K
+/// tokens" prompts the obvious question — this answers it, and usually the answer is that most of
+/// the context is tool schemas the turn never uses.
+#[derive(Clone, Serialize)]
+pub struct DebugContextEvent {
+    pub run_id: u64,
+    pub step: usize,
+    pub total: usize,
+    /// 0 when uncapped. Above it, the prefix cache dies and everything is re-read each step.
+    pub num_ctx: usize,
+    pub system_tokens: usize,
+    pub tools_tokens: usize,
+    pub history_tokens: usize,
+    /// Biggest schemas first — the usual place a profile is quietly paying for tools it never calls.
+    pub schemas: Vec<ContextItem>,
+    /// In wire order. The one that grows a turn past num_ctx is nearly always a single big result.
+    pub messages: Vec<ContextItem>,
+}
+
 // Debug events
 #[derive(Clone, Serialize)]
 pub struct DebugStepEvent {
@@ -1654,6 +1684,45 @@ pub async fn agent_loop<R: tauri::Runtime>(
                 format!("Reading {} tokens of context…", k(est))
             };
             let _ = app.emit("agent-status", serde_json::json!({ "phase": phase }));
+
+            // Break that number down. Cheap (one estimate pass over data already in memory) and it
+            // turns "why is my context 9K" into an answer rather than a scrolling exercise.
+            let full = app.try_state::<crate::AppState>()
+                .map(|st| *st.debug_full_context.lock().unwrap()).unwrap_or(false);
+            let cut = |t: &str| -> Option<String> {
+                if !full { return None; }
+                const MAX: usize = 200_000;   // one absurd result must not wedge the panel
+                Some(if t.chars().count() > MAX { t.chars().take(MAX).collect::<String>() + "\n…[truncated]" } else { t.to_string() })
+            };
+            let mut schemas: Vec<ContextItem> = tools.iter().map(|t| {
+                let json = serde_json::to_string(t).unwrap_or_default();
+                ContextItem { label: t.function.name.clone(), tokens: estimate_tokens(&json), text: cut(&json) }
+            }).collect();
+            schemas.sort_by(|a, b| b.tokens.cmp(&a.tokens));
+            let messages: Vec<ContextItem> = wire.iter().enumerate().map(|(i, m)| {
+                let body = m.content.clone().unwrap_or_default();
+                let calls = m.tool_calls.as_ref()
+                    .and_then(|tc| serde_json::to_string(tc).ok()).unwrap_or_default();
+                let label = match (m.role.as_str(), m.name.as_deref()) {
+                    ("tool", Some(n)) => format!("{i}. tool result · {n}"),
+                    (r, _) if !calls.is_empty() => format!("{i}. {r} · tool call"),
+                    (r, _) => format!("{i}. {r}"),
+                };
+                ContextItem {
+                    label,
+                    tokens: estimate_tokens(&body) + estimate_tokens(&calls) + 4,
+                    text: cut(&if calls.is_empty() { body } else { format!("{body}\n{calls}") }),
+                }
+            }).collect();
+            let system_tokens = wire.first().filter(|m| m.role == "system")
+                .and_then(|m| m.content.as_deref()).map(estimate_tokens).unwrap_or(0);
+            let tools_tokens = schemas.iter().map(|c| c.tokens).sum();
+            let _ = app.emit("debug-step-context", DebugContextEvent {
+                run_id, step, total: est, num_ctx: ctx,
+                system_tokens, tools_tokens,
+                history_tokens: est.saturating_sub(tools_tokens + system_tokens),
+                schemas, messages,
+            });
         }
 
         // Re-sample the step when the model emits a tool call Ollama can't parse; only a

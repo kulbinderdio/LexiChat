@@ -165,6 +165,22 @@ export function serverModelPool(s: ServerConfig): string[] {
 /// entries in `manualModels` are preserved. First fetch auto-enables a small chat set (or none if
 /// large); later fetches keep the user's curated set, pruned to what still exists. An empty fetch
 /// is a no-op (an unreachable endpoint doesn't wipe the current list).
+// A configured endpoint can carry a whole query in its URL (the TED endpoint ships a 3,975-char
+// one), which wrapped across the row and pushed the controls out of view. Show the part that
+// identifies the endpoint and note the rest, with the full value on hover and in the edit form.
+function shortUrl(url: string): { shown: string; note: string } {
+  const q = url.indexOf("?");
+  if (q < 0) return { shown: url, note: "" };
+  const params = new URLSearchParams(url.slice(q + 1));
+  const hasQuery = params.has("query");
+  const n = [...params.keys()].length;
+  return {
+    shown: url.slice(0, q),
+    // Terse on the row; the full URL is on hover and in the edit form.
+    note: hasQuery ? " · +query" : ` · +${n} param${n === 1 ? "" : "s"}`,
+  };
+}
+
 export function reconcileCatalog(s: ServerConfig, fetched: string[]): ServerConfig {
   if (fetched.length === 0) return s;
   const pool = [...new Set([...fetched, ...(s.manualModels ?? [])])];
@@ -198,6 +214,10 @@ export interface AppSettings {
   // When true, run_python skips the per-session approval prompt (persisted here; seeded into the
   // Rust session flag at startup via set_code_exec_unlocked).
   alwaysAllowCodeExec?: boolean;
+  // Capture the verbatim context in the debug panel, not just its size breakdown. Off by default:
+  // a long research turn holds tens of MB of history in the renderer, and it puts every tool result
+  // the run touched on screen.
+  debugFullContext?: boolean;
   // Local offline image generation (stable-diffusion.cpp). Pushed to the Rust backend via
   // set_image_gen_config. Field names are snake_case to match the Rust struct 1:1.
   imageGen?: ImageGenConfig;
@@ -1358,6 +1378,26 @@ function ToolsTab({ settings, onChange }: { settings: AppSettings; onChange: (s:
 
       <section className="admin-section">
         <div className="admin-section-header">
+          <span className="admin-section-icon">🔍</span>
+          <span className="admin-section-title">DEBUGGING</span>
+        </div>
+        <label className="admin-row" style={{ cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={settings.debugFullContext === true}
+            onChange={e => onChange({ ...settings, debugFullContext: e.target.checked })}
+            className="admin-checkbox"
+          />
+          <span className="tool-icon">🔍</span>
+          <div className="admin-row-text">
+            <span className="admin-row-title">Capture full context in the Debug panel</span>
+            <span className="admin-row-sub">The Debug panel always shows how big each step's context is and what it is made of. Turn this on to also capture the text itself — every system prompt, tool schema and message exactly as sent. Off by default: a long tool-heavy turn holds tens of MB in memory, and everything the run touched (API responses, file contents) appears on screen.</span>
+          </div>
+        </label>
+      </section>
+
+      <section className="admin-section">
+        <div className="admin-section-header">
           <span className="admin-section-icon">⚙</span>
           <span className="admin-section-title">QUERY SETTINGS</span>
         </div>
@@ -1799,15 +1839,15 @@ function OpenAPITab({ stored, onChange }: { stored: StoredOpenAPISpec[]; onChang
                   {expanded.has(storedSpec.id) ? "▼" : "▶"}
                 </button>
               )}
-              <div style={{ flex: 1 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="admin-row-title">
                   {storedSpec.title}
                   {isBuiltin && (
                     <span style={{ fontSize: 9, marginLeft: 6, opacity: 0.45, fontWeight: 400 }}>built-in</span>
                   )}
                 </div>
-                <div className="admin-row-sub">
-                  {storedSpec.base_url}
+                <div className="admin-row-sub url" title={storedSpec.base_url}>
+                  {shortUrl(storedSpec.base_url || "").shown}
                   {rustSpec ? ` · ${rustSpec.tool_count} tools` : isEnabled ? " · loading…" : " · disabled"}
                 </div>
               </div>
@@ -2135,13 +2175,14 @@ function SparqlTab({ stored, onChange }: { stored: StoredSparqlEndpoint[]; onCha
               <button className="icon-btn" onClick={() => toggleExpand(ep.id)} style={{ fontSize: 9 }}>
                 {expanded.has(ep.id) ? "▼" : "▶"}
               </button>
-              <div style={{ flex: 1 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="admin-row-title">
                   {ep.title}
                   {isBuiltin && <span style={{ fontSize: 9, marginLeft: 6, opacity: 0.45, fontWeight: 400 }}>built-in</span>}
                 </div>
-                <div className="admin-row-sub">
-                  {ep.endpoint_url}
+                <div className="admin-row-sub url" title={ep.endpoint_url}>
+                  {shortUrl(ep.endpoint_url).shown}
+                  <span style={{ opacity: 0.7 }}>{shortUrl(ep.endpoint_url).note}</span>
                   {info ? ` · ${info.tool_count} tools` : isEnabled ? " · loading…" : " · disabled"}
                 </div>
               </div>

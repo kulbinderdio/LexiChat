@@ -99,6 +99,10 @@ pub struct AppState {
     /// Whether the active run's profile allows code (`run_python`) to call registered tools via
     /// `call_tool` (code-mode). Set at `send_message` start. Off unless the profile opts in.
     pub code_tools_allowed: Mutex<bool>,
+    /// Capture the verbatim context in the debug panel as well as its sizes. Off by default: a long
+    /// research turn would hold tens of MB of history in the renderer, and it puts every tool result
+    /// and file the run touched on screen.
+    pub debug_full_context: Mutex<bool>,
     /// Built-in tool names the active run may call from code (the profile's enabled built-ins,
     /// minus run_python itself). Used to gate `call_tool_from_code`.
     pub run_callable_builtins: Mutex<std::collections::HashSet<String>>,
@@ -147,6 +151,7 @@ impl Default for AppState {
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pending_output_files: Mutex::new(Vec::new()),
             code_tools_allowed: Mutex::new(false),
+            debug_full_context: Mutex::new(false),
             run_callable_builtins: Mutex::new(std::collections::HashSet::new()),
             pending_dev_run: Mutex::new(HashMap::new()),
             dev_run_seq: std::sync::atomic::AtomicU64::new(0),
@@ -436,6 +441,9 @@ pub struct SendMessageArgs {
     /// (code-mode). Off unless the profile opts in.
     #[serde(default)]
     pub allow_code_tools: bool,
+    /// Capture verbatim context in the debug panel, not just its size. Off unless the user asks.
+    #[serde(default)]
+    pub debug_full_context: bool,
     #[serde(default)]
     pub keep_alive: Option<String>,
     #[serde(default = "default_web_search_results")]
@@ -533,6 +541,7 @@ async fn send_message(
     // Code-mode: record whether this run's profile lets code call tools, and which built-ins are
     // callable from code (enabled built-ins minus run_python, to prevent code re-entering itself).
     *state.code_tools_allowed.lock().unwrap() = args.allow_code_tools;
+    *state.debug_full_context.lock().unwrap() = args.debug_full_context;
     *state.run_callable_builtins.lock().unwrap() = builtin_tools.iter()
         .map(|t| t.function.name.clone())
         .filter(|n| n != "run_python" && n != "find_tools")
