@@ -2268,6 +2268,21 @@ export default function App() {
       };
       autoApproveControlRef.current = true;
       const t0 = performance.now();
+      // Phase timings: where a turn's wall time actually goes. The gap before the first step, and
+      // the gap between a step starting and its first token (prompt evaluation), are invisible in
+      // the UI and are usually the bulk of a slow turn.
+      const marks: { at: number; what: string }[] = [];
+      const mark = (what: string) => marks.push({ at: Math.round(performance.now() - t0), what });
+      const phaseUnsubs: Array<() => void> = [];
+      let sawToken = false;
+      (await Promise.all([
+        listen<{ step: number }>("debug-step-start", e => mark(`step ${e.payload.step} start`)),
+        listen("agent-token", () => { if (!sawToken) { sawToken = true; mark("first token"); } }),
+        listen<{ name: string }>("agent-tool-call", e => mark(`tool call: ${e.payload.name}`)),
+        listen<{ name: string }>("agent-tool-result", e => { mark(`tool result: ${e.payload.name}`); sawToken = false; }),
+        listen<{ step: number; duration_ms: number }>("debug-step-done",
+          e => mark(`step ${e.payload.step} done (${e.payload.duration_ms}ms)`)),
+      ])).forEach(u => phaseUnsubs.push(u));
       try {
         // NOTE: send() awaits invoke("send_message"), which runs the ENTIRE agent loop — it does
         // not return early. The settle loop below is therefore only a short backstop for isRunning
@@ -2280,10 +2295,14 @@ export default function App() {
           await new Promise(r => setTimeout(r, 150));
         }
       } catch (err) {
-        report({ error: String(err), elapsedMs: Math.round(performance.now() - t0) }); autoApproveControlRef.current = false; return;
+        phaseUnsubs.forEach(u => u());   // otherwise a failed run leaks its phase listeners
+        report({ error: String(err), elapsedMs: Math.round(performance.now() - t0), phases: marks });
+        autoApproveControlRef.current = false; return;
       }
       autoApproveControlRef.current = false;
       const elapsedMs = Math.round(performance.now() - t0);
+      phaseUnsubs.forEach(u => u());
+      mark("run done");
       const codeToolCalls = drainCodeToolCalls();
       const captured = sliceFromAnchor();
       const trace = captured.map(m => ({
@@ -2301,7 +2320,7 @@ export default function App() {
         .find(m => m.role === "assistant" && !!m.text)?.text;
       // totalMessages lets a caller spot a suspiciously thin trace instead of reading it as
       // "nothing happened" — the mistake that made a five-tool run look like zero.
-      report({ finalAnswer, elapsedMs, codeToolCalls, messages: trace,
+      report({ finalAnswer, elapsedMs, codeToolCalls, messages: trace, phases: marks,
                totalMessages: messagesRef.current.length, capturedMessages: captured.length });
     }).then(u => cleanup.push(u));
 
