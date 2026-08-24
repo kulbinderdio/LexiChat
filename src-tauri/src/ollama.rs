@@ -1200,6 +1200,22 @@ pub fn estimate_tokens(s: &str) -> usize {
 /// wire malformed), we shrink the CONTENT of the oldest tool results in place, oldest first, always
 /// protecting the system prompt, every user message, and the most recent messages. Returns the
 /// number of tool results elided (for logging/tests).
+/// Estimated size of what will be sent this step: tool schemas plus every message. This is the
+/// work the model must read before it can emit a single token, and it is the bulk of the silence
+/// in a slow turn — 27,839 tokens meant 48 seconds of nothing in a measured case.
+pub fn wire_tokens(wire: &[WireMessage], tools: &[ToolSchema]) -> usize {
+    let msg = |m: &WireMessage| -> usize {
+        let mut t = 4; // per-message framing overhead
+        if let Some(c) = &m.content { t += estimate_tokens(c); }
+        if let Some(tc) = &m.tool_calls {
+            t += serde_json::to_string(tc).map(|s| estimate_tokens(&s)).unwrap_or(0);
+        }
+        t
+    };
+    serde_json::to_string(tools).map(|s| estimate_tokens(&s)).unwrap_or(0)
+        + wire.iter().map(msg).sum::<usize>()
+}
+
 fn fit_wire_to_context(
     wire: &mut [WireMessage],
     tools: &[ToolSchema],
@@ -1625,7 +1641,20 @@ pub async fn agent_loop<R: tauri::Runtime>(
 
         // The model must eval the whole prompt (history + tool schemas) before the first token
         // streams — silent time that grows with the conversation. Flag it as "Thinking…".
-        if !silent { let _ = app.emit("agent-status", serde_json::json!({ "phase": "Thinking…" })); }
+        if !silent {
+            // "Thinking…" gave no clue why a turn sat silent for minutes. Name the actual work, and
+            // call out the context overflow — past num_ctx the prefix cache dies and the WHOLE
+            // prompt is re-read every step, which is the difference between a 300s and a 1400s turn.
+            let est = wire_tokens(&wire, &tools);
+            let ctx = options.as_ref().and_then(|o| o.num_ctx).unwrap_or(0) as usize;
+            let k = |n: usize| if n >= 1000 { format!("{}K", n / 1000) } else { n.to_string() };
+            let phase = if ctx > 0 && est > ctx {
+                format!("Reading {} tokens — over the {} context limit, so all of it is re-read each step", k(est), k(ctx))
+            } else {
+                format!("Reading {} tokens of context…", k(est))
+            };
+            let _ = app.emit("agent-status", serde_json::json!({ "phase": phase }));
+        }
 
         // Re-sample the step when the model emits a tool call Ollama can't parse; only a
         // persistent failure (or any other error) ends the run.
@@ -2596,6 +2625,18 @@ mod tests {
     /// array 4.3k tokens when it was really 16k, so an oversized wire slipped past the budget and
     /// Ollama front-truncated the system prompt. Both real counts below are measured
     /// `prompt_eval_count` values from qwen3 on the actual TfL journey that failed.
+    /// The status line is derived from this, so it must count the tool schemas too — they are a
+    /// large fixed cost per step and were a third of the prompt in the measured TED case.
+    #[test]
+    fn wire_tokens_counts_messages_and_tool_schemas() {
+        let wire = vec![msg("system", Some(&"a".repeat(4000)), None),
+                        msg("user", Some(&"b".repeat(400)), None)];
+        let bare = wire_tokens(&wire, &[]);
+        assert!(bare > 800 && bare < 1200, "message estimate was {bare}");
+        let with_tools = wire_tokens(&wire, &[tool("some_tool_with_a_schema")]);
+        assert!(with_tools > bare, "tool schemas must be counted: {with_tools} vs {bare}");
+    }
+
     #[test]
     fn estimate_tokens_tracks_real_counts_for_prose_and_coordinate_data() {
         let coords: String = std::iter::repeat("[51.44134339536, 0.36633931267], ")

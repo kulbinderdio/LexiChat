@@ -2277,6 +2277,9 @@ export default function App() {
       let sawToken = false;
       (await Promise.all([
         listen<{ step: number }>("debug-step-start", e => mark(`step ${e.payload.step} start`)),
+        // The status label is transient in the UI (cleared on the first token), so record what the
+        // user was actually shown while waiting.
+        listen<{ phase: string }>("agent-status", e => mark(`status: ${e.payload.phase}`)),
         listen("agent-token", () => { if (!sawToken) { sawToken = true; mark("first token"); } }),
         listen<{ name: string }>("agent-tool-call", e => mark(`tool call: ${e.payload.name}`)),
         listen<{ name: string }>("agent-tool-result", e => { mark(`tool result: ${e.payload.name}`); sawToken = false; }),
