@@ -81,6 +81,11 @@ async function main() {
     const trace = j.trace ?? j;
     if (j.error) { console.error("server error:", j.error); process.exit(1); }
     if (trace.error) { console.error("run error:", trace.error, trace.elapsedMs ? `(${(trace.elapsedMs/1000).toFixed(1)}s)` : ""); process.exit(1); }
+    // A trace far thinner than the conversation means the capture missed messages — say so rather
+    // than letting it read as "the model did nothing".
+    if (trace.capturedMessages === 0 && trace.totalMessages > 0) {
+      console.warn(`⚠ captured 0 of ${trace.totalMessages} messages — trace is unreliable, check the app's chat view`);
+    }
     for (const m of trace.messages ?? []) {
       if (m.role === "user") console.log(`\n👤 ${trunc(m.text)}`);
       else if (m.toolCalls) for (const tc of m.toolCalls) console.log(`  🔧 ${tc.name}(${trunc(tc.args, 160)})`);

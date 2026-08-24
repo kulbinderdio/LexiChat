@@ -63,6 +63,21 @@ pub fn now_secs() -> i64 {
 }
 
 /// Load the metadata index (newest first). Missing/corrupt → empty list.
+/// A conversation's on-disk footprint: its saved JSON plus any working files kept alongside it
+/// (offloaded tool results and /work/artifacts data). Computed on demand rather than stored in
+/// index.json — it is derived state and would go stale the moment a turn wrote anything.
+pub fn disk_size(id: &str) -> u64 {
+    fn dir_size(p: &std::path::Path) -> u64 {
+        let Ok(entries) = std::fs::read_dir(p) else { return 0 };
+        entries.flatten().map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => dir_size(&e.path()),
+            _ => e.metadata().map(|m| m.len()).unwrap_or(0),
+        }).sum()
+    }
+    let json = conversation_path(id).metadata().map(|m| m.len()).unwrap_or(0);
+    json + dir_size(&conversations_dir().join(format!("{id}-files")))
+}
+
 pub fn load_index() -> Vec<ConversationMeta> {
     std::fs::read_to_string(index_path())
         .ok()
@@ -126,4 +141,32 @@ pub fn derive_title(wire: &[WireMessage]) -> String {
         title.push('…');
     }
     title
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The history list flattens meta and appends a derived size. Guards the wire shape the
+    /// sidebar reads — a rename or a missed flatten would silently drop the size indicator.
+    #[test]
+    fn list_item_serialises_flat_meta_plus_size() {
+        #[derive(serde::Serialize)]
+        struct Item { #[serde(flatten)] meta: ConversationMeta, size_bytes: u64 }
+        let meta = ConversationMeta {
+            id: "conv-1".into(), title: "t".into(), profile_id: None,
+            model: "m".into(), created_at: 1, updated_at: 2, message_count: 3,
+        };
+        let v = serde_json::to_value(Item { meta, size_bytes: 4096 }).unwrap();
+        assert_eq!(v["id"], "conv-1");            // flattened, not nested under "meta"
+        assert_eq!(v["message_count"], 3);
+        assert_eq!(v["size_bytes"], 4096);
+        assert!(v.get("meta").is_none());
+    }
+
+    /// A conversation with no working-files directory must report just its JSON size, not fail.
+    #[test]
+    fn disk_size_handles_a_missing_files_dir() {
+        assert_eq!(disk_size("conv-does-not-exist-at-all"), 0);
+    }
 }

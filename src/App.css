@@ -216,6 +216,11 @@ html, body, #root { height: 100%; overflow: hidden; }
   margin-top: 2px;
 }
 
+/* Conversations now store their working files, so size varies a lot between chats. Neutral by
+   default; only the ones actually worth pruning draw the eye. */
+.history-size { font-variant-numeric: tabular-nums; }
+.history-size.large { color: #e0a458; font-weight: 600; }
+
 .history-rename-input {
   width: 100%;
   background: var(--bg);

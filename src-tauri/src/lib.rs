@@ -236,13 +236,23 @@ pub struct ListConversationsArgs {
     pub profile_id: Option<String>,
 }
 
+/// Index entry plus its on-disk footprint. Size is derived, so it is attached here rather than
+/// stored in index.json where it would go stale.
+#[derive(Serialize)]
+struct ConversationListItem {
+    #[serde(flatten)]
+    meta: history::ConversationMeta,
+    size_bytes: u64,
+}
+
 /// List saved conversations scoped to the given profile (per-profile history).
 /// A `None` profile matches conversations saved with no active profile.
 #[tauri::command]
-fn list_conversations(args: ListConversationsArgs) -> Vec<history::ConversationMeta> {
+fn list_conversations(args: ListConversationsArgs) -> Vec<ConversationListItem> {
     history::load_index()
         .into_iter()
         .filter(|m| m.profile_id == args.profile_id)
+        .map(|m| { let size_bytes = history::disk_size(&m.id); ConversationListItem { meta: m, size_bytes } })
         .collect()
 }
 
@@ -298,6 +308,40 @@ fn save_active_conversation(
     Ok(meta)
 }
 
+/// Working files for a chat — offloaded tool results (`data`) and `/work/artifacts` payloads
+/// (`artifacts`) — kept under the conversation so they last exactly as long as it does.
+///
+/// Previously both lived in a shared temp dir swept after 6 hours, which quietly broke the
+/// reasonable assumption that reopening a saved chat gives you back everything it produced: the
+/// artifact HTML survived, but the underlying data did not, and the conversation still contained
+/// instructions telling the model to read files that no longer existed.
+///
+/// Mints the conversation id when the chat has not been saved yet, so the very first turn already
+/// has a home; `save_active_conversation` reuses whatever id is set.
+pub fn conversation_files_dir(state: &AppState, sub: &str) -> Option<std::path::PathBuf> {
+    let mut active = state.active_conversation_id.lock().unwrap();
+    let id = match active.as_ref() {
+        Some(id) => id.clone(),
+        None => { let id = history::new_id(); *active = Some(id.clone()); id }
+    };
+    let dir = dirs_path().join("conversations").join(format!("{id}-files")).join(sub);
+    std::fs::create_dir_all(&dir).ok().map(|_| dir)
+}
+
+/// Remove working-file directories whose conversation no longer exists — chats deleted outside the
+/// app, or a first turn that was never saved.
+fn prune_orphan_conversation_files() {
+    let convs = dirs_path().join("conversations");
+    let Ok(entries) = std::fs::read_dir(&convs) else { return };
+    for e in entries.flatten() {
+        let Some(name) = e.file_name().to_str().map(String::from) else { continue };
+        let Some(id) = name.strip_suffix("-files") else { continue };
+        if !convs.join(format!("{id}.json")).exists() {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub struct ConversationIdArgs {
     pub id: String,
@@ -322,6 +366,8 @@ fn delete_conversation(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     history::delete_one(&args.id).map_err(|e| e.to_string())?;
+    // The chat's working files go with it.
+    let _ = std::fs::remove_dir_all(dirs_path().join("conversations").join(format!("{}-files", args.id)));
     let mut active = state.active_conversation_id.lock().unwrap();
     if active.as_deref() == Some(args.id.as_str()) {
         *active = None;
@@ -841,7 +887,14 @@ struct PyOutFile { name: String, b64: String }
 /// carries only the NAME and size — the content stays in the frontend and is spliced into the
 /// artifact HTML there, so bulk data never enters the model's context (see `substituteData`).
 #[derive(Deserialize)]
-struct PyDataFile { name: String, #[serde(default)] chars: usize, #[serde(default)] error: Option<String> }
+struct PyDataFile {
+    name: String,
+    #[serde(default)] chars: usize,
+    #[serde(default)] error: Option<String>,
+    /// Contents, persisted to `artifact_data_dir` so the file survives into later turns. Written to
+    /// disk only — never echoed back to the model, which still sees just the name and size.
+    #[serde(default)] text: Option<String>,
+}
 
 #[derive(Deserialize)]
 struct RespondPythonResultArgs {
@@ -886,7 +939,22 @@ fn respond_python_result(args: RespondPythonResultArgs, app: AppHandle, state: S
     }
 
     let mut output = args.output;
-    if let Some(err) = args.error { if !err.is_empty() { output.push_str("\n[Python error]\n"); output.push_str(&err); } }
+    if let Some(err) = args.error {
+        if !err.is_empty() { output.push_str("\n[Python error]\n"); output.push_str(&err); }
+    }
+    // Reopening an old chat can leave the history telling the model to read a staged file that has
+    // since been removed. A bare FileNotFoundError reads as a code bug; name the real cause and the
+    // way forward. Checked against the WHOLE result, not just the error field — code that catches
+    // the exception itself prints the message to stdout, which is the common case.
+    if output.contains("FileNotFoundError")
+        && (output.contains("/work/data/") || output.contains("/work/artifacts/"))
+    {
+        output.push_str(
+            "\n[That file is not in the sandbox. Staged files belong to the chat that created them: \
+             offloaded tool results and /work/artifacts data are restored for THIS conversation only, \
+             and are gone if the conversation was deleted. Do not retry the same path — re-run the \
+             tool call to fetch the data again, then continue.]");
+    }
     if !saved.is_empty() {
         output.push_str(&format!(
             "\n[SAVED TO DISK — report THESE exact real path(s) to the user; do NOT mention \
@@ -910,13 +978,24 @@ fn respond_python_result(args: RespondPythonResultArgs, app: AppHandle, state: S
     // /work/artifacts payloads: tell the model the token is armed, and NOT what's in the file.
     // That's the whole point — it references the data by name instead of retyping it.
     if !args.data_files.is_empty() {
+        // Persist them so they are re-staged into /work/artifacts on later turns (the Pyodide
+        // workspace itself is wiped whenever a new message starts).
+        let dir = conversation_files_dir(&state, "artifacts")
+            .unwrap_or_else(ollama::artifact_data_dir);
+        for f in &args.data_files {
+            let (Some(text), Some(name)) = (f.text.as_deref(), std::path::Path::new(&f.name)
+                .file_name().and_then(|n| n.to_str())) else { continue };
+            let _ = std::fs::write(dir.join(name), text);
+        }
         let (ok, bad): (Vec<_>, Vec<_>) = args.data_files.iter().partition(|f| f.error.is_none());
         if !ok.is_empty() {
             output.push_str(&format!(
                 "\n[ARTIFACT DATA READY — {}. In your create_artifact HTML write the token {{{{data:NAME}}}} \
                  where the data should go (e.g. `const DATA = {{{{data:{}}}}};` inside a <script>), and LexiChat \
                  splices the exact file contents in. Do NOT print these contents or copy the values into your \
-                 HTML by hand — reference them by name.]",
+                 HTML by hand — reference them by name. This file persists: it is re-staged into \
+                 /work/artifacts on later turns, so you can read it back with run_python or reference \
+                 it with the token in a subsequent message.]",
                 ok.iter().map(|f| format!("/work/artifacts/{} ({} chars)", f.name, f.chars))
                     .collect::<Vec<_>>().join(", "),
                 ok[0].name));
@@ -2211,10 +2290,17 @@ struct DevControlReportArgs { id: u64, trace: serde_json::Value }
 
 #[tauri::command]
 fn dev_control_report(args: DevControlReportArgs, state: State<'_, AppState>) -> Result<(), String> {
-    if let Some(tx) = state.pending_dev_run.lock().unwrap().remove(&args.id) {
-        let _ = tx.send(args.trace);
+    let tx = state.pending_dev_run.lock().unwrap().remove(&args.id);
+    match tx {
+        Some(tx) => { let _ = tx.send(args.trace); Ok(()) }
+        // Silently succeeding here hid the real failure: the run had completed fine but the HTTP
+        // caller had already timed out, so its id was gone. Say so instead of swallowing it.
+        None => {
+            eprintln!("[dev-control] run {} reported after its caller gave up — the turn finished \
+                       but the HTTP request had already timed out", args.id);
+            Err(format!("no pending dev run with id {} (caller timed out)", args.id))
+        }
     }
-    Ok(())
 }
 
 #[cfg(debug_assertions)]
@@ -2298,7 +2384,12 @@ async fn dev_await(app: &AppHandle, event: &str, params: serde_json::Value) -> R
     let (tx, rx) = tokio::sync::oneshot::channel();
     state.pending_dev_run.lock().unwrap().insert(id, tx);
     let _ = app.emit(event, serde_json::json!({ "id": id, "params": params }));
-    match tokio::time::timeout(std::time::Duration::from_secs(900), rx).await {
+    // 900s was too short and produced a misleading failure: real agent turns on a local model run
+    // well past it (2930s observed), so the server gave up while the frontend was still working
+    // correctly, then reported "frontend did not respond". `send()` awaits the whole agent loop, so
+    // this timeout — not anything on the frontend — is what bounds a /dev/run.
+    const DEV_RUN_TIMEOUT_SECS: u64 = 3600;
+    match tokio::time::timeout(std::time::Duration::from_secs(DEV_RUN_TIMEOUT_SECS), rx).await {
         Ok(Ok(v)) => Ok(v),
         _ => { state.pending_dev_run.lock().unwrap().remove(&id); Err(()) }
     }
@@ -2306,8 +2397,12 @@ async fn dev_await(app: &AppHandle, event: &str, params: serde_json::Value) -> R
 
 #[cfg(debug_assertions)]
 async fn route_dev_control(method: &str, path: &str, body: &[u8], app: &AppHandle) -> (&'static str, serde_json::Value) {
+    // The old wording ("is the app window open?") sent debugging down the wrong path: the real
+    // cause was the frontend still being mid-run and dropping the request. The listener now
+    // reports `busy` explicitly, so a genuine timeout here means something else.
     let timeout_err = ("504 Gateway Timeout", serde_json::json!({
-        "error": "frontend did not respond (is the app window open and a model selected?)" }));
+        "error": "frontend did not report within 900s — it may be mid-run, wedged, or the window \
+                  is closed. A busy app now replies with error \"busy\" instead of timing out." }));
     match (method, path) {
         ("GET", "/dev/ping") => ("200 OK", serde_json::json!({ "ok": true, "app": "lexichat" })),
         ("GET", "/dev/state") => match dev_await(app, "dev-control-state", serde_json::json!({})).await {
@@ -2350,6 +2445,9 @@ pub fn run() {
         )
         .setup(|app| {
             build_menu(app)?;
+            // Drop working files whose conversation is gone (deleted outside the app, or a first
+            // turn that was never saved).
+            prune_orphan_conversation_files();
             jobs::spawn_scheduler(app.handle().clone());
             setup_tray(app)?;
 

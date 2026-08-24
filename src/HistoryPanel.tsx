@@ -10,6 +10,9 @@ export interface ConversationMeta {
   created_at: number; // unix seconds
   updated_at: number;
   message_count: number;
+  /// On-disk footprint: the saved JSON plus any working files kept with the chat. Computed by the
+  /// backend on each list, so it reflects reality rather than a stored guess.
+  size_bytes?: number;
 }
 
 interface Props {
@@ -22,6 +25,16 @@ interface Props {
   onRename: (id: string, title: string) => void;
   onHide: () => void;
 }
+
+// Chats now carry their working files (offloaded tool results, /work/artifacts data), so a
+// research-heavy one can be materially larger than a chatty one. Surfacing the size is what makes
+// that manageable rather than mysterious.
+function formatSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1048576).toFixed(bytes >= 10 * 1048576 ? 0 : 1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
+}
+const LARGE_BYTES = 5 * 1024 * 1024;   // worth a second look when tidying up
 
 function relativeTime(unixSecs: number): string {
   const diff = Date.now() / 1000 - unixSecs;
@@ -96,7 +109,20 @@ export function HistoryPanel({ visible, conversations, activeId, onSelect, onNew
                   {c.title}
                 </div>
               )}
-              <div className="history-meta">{relativeTime(c.updated_at)}</div>
+              <div className="history-meta">
+                {relativeTime(c.updated_at)}
+                {c.size_bytes != null && c.size_bytes > 0 && (
+                  <>
+                    {" · "}
+                    <span
+                      className={c.size_bytes >= LARGE_BYTES ? "history-size large" : "history-size"}
+                      title={`${c.size_bytes.toLocaleString()} bytes on disk, including this chat's working files`}
+                    >
+                      {formatSize(c.size_bytes)}
+                    </span>
+                  </>
+                )}
+              </div>
             </div>
             <button
               className="history-del"

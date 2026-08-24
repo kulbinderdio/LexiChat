@@ -99,7 +99,7 @@ const ALL_BUILTIN_TOOLS: ToolSchema[] = [
   { type: "function", function: { name: "compose_email", description: "Build a base64url-encoded RFC 2822 email ready for the Gmail API. Returns ONLY the raw base64url string — use the entire return value as the 'raw' field in gmail_sendmessage, with no modification.", parameters: { type: "object", properties: { to: { type: "string", description: "Recipient email address(es), comma-separated." }, from: { type: "string", description: "Sender email address (optional)." }, subject: { type: "string", description: "Email subject line." }, body: { type: "string", description: "Plain text email body." }, reply_to_message_id: { type: "string", description: "Message-ID to reply to, for threading (optional)." } }, required: ["to","subject","body"] } } },
   { type: "function", function: { name: "fetch_webpage", description: "Fetch a URL. For a web page it strips HTML and returns readable text; for a DATA FILE (CSV, TSV, JSON, XML, plain text) — including 'Export/Download CSV' links and files served as an attachment/download — it returns the raw file content. So to download a CSV/data file, just call this with the file's URL; you do NOT need browser automation, and you should NOT claim you can only fetch pages. If a page has an 'Export as CSV' / 'Download' button, find that link's URL in the page HTML (or the obvious export endpoint) and fetch it directly. Large results are truncated for display but the full content is saved to a file for run_python to process (the tool result tells you the path). Use this whenever the user wants to read a page/article (pass a web_search result's URL) or download a file; do NOT refuse or say you can only summarise. To SCRAPE a structured listing/table (e.g. search results) or find a link's exact URL, set raw:true to get the unstripped HTML and parse it in run_python with BeautifulSoup. A shared cookie session persists across calls, so you can fetch a page then fetch a link it set up (e.g. a session-bound export).", parameters: { type: "object", properties: { url: { type: "string", description: "Full URL of the page or data file to fetch, must start with http:// or https://" }, raw: { type: "boolean", description: "Return the page's raw, unstripped HTML instead of readability text — for parsing listings/tables or finding links with run_python + BeautifulSoup. Default false." } }, required: ["url"] } } },
   { type: "function", function: { name: "get_current_datetime", description: "Get the current local date and time. Returns human-readable, ISO 8601, filename-safe, and Unix timestamp formats. Use whenever you need today's date or a timestamp for a filename.", parameters: { type: "object", properties: {}, required: [] } } },
-  { type: "function", function: { name: "run_python", description: "Execute real Python (CPython) in a secure, offline sandbox to compute, analyse data, and CREATE CHARTS. The full standard library plus numpy, pandas, matplotlib, scipy, sympy, openpyxl (read/write Excel .xlsx), beautifulsoup4 (parse HTML), and geopandas with shapely & pyproj (geospatial — plot points/lines/polygons and choropleth MAPS as a matplotlib figure; note there is no online street/satellite basemap offline, so for a street-map backdrop use a connected map tool instead), python-pptx (build editable PowerPoint .pptx decks — used by the 'presentation' skill), python-docx (build editable Word .docx documents — 'from docx import Document'; save to /work/out), and Pillow/PIL (open, edit and save raster images — recolour, adjust, crop, resize, filter, composite/overlay, and draw shapes or text) are available — import them normally. These are the ONLY third-party packages, and there is NO network access, so do not import anything else (e.g. requests, scikit-learn, plotly, contextily) — it will fail. Use print() for text output. Files live in a virtual workspace at /work/uploads/: the user's attached files are there — documents (PDF, Word) are ALREADY extracted to plain text, so just open() and read them (do NOT try to PDF-parse); data files (CSV, Excel, JSON) are as-is for pandas. IMAGES the user attached are there too as REAL image files at /work/uploads/<filename> — to edit an attached photo, open it with Pillow (from PIL import Image; im = Image.open('/work/uploads/<name>')), make the change, and im.save('/work/out/<name>') — do NOT search the user's folders for it and do NOT claim you can't find it. (Note: Pillow does pixel/colour edits, not semantic object selection — to repaint a specific object like 'the building' while keeping the rest of the photo, use the generate_image tool's source_image edit mode instead.) SAVE any output (files, charts) to /work/out/ (kept for the user). To hand BULK DATA to a create_artifact page (route polylines, coordinate lists, big tables) write it to /work/artifacts/<name>.json instead — those files are NOT saved to the user's disk and are NOT printed back to you; you then reference them in the HTML as {{data:<name>.json}}. Always prefer that over print()ing the values and copying them into the HTML yourself. Your /work files (and Python variables) PERSIST across run_python calls within the same turn — a chart PNG you saved in one call is still there in the next — and reset only when the user sends a new message. So you can build a task up across calls (e.g. generate chart PNGs in one call, then read them to build a PowerPoint in another). (For a plain read/summary of a document with no computation, prefer the read_file tool — no code or permission needed.) Use normal Python I/O — open(), pathlib, pd.read_csv('/work/uploads/data.csv'). TO SHOW A GRAPH, build a matplotlib figure (e.g. `import matplotlib.pyplot as plt; plt.plot(x, y)`) — it is rendered INLINE in the chat automatically — you do NOT need to save it (do NOT hand-draw ASCII or SVG). Only use plt.savefig('/work/out/name.png') if the user explicitly wants a saved file — /work/out is an in-memory scratch path, but anything you write there is copied to a real folder on the user's disk and the tool result reports that real absolute path. When telling the user where a file was saved, quote the real path from the tool result (the line marked SAVED TO DISK); NEVER tell the user the file is at /work/out (they cannot open that). No network access. Do not read/write paths outside /work.", parameters: { type: "object", properties: { code: { type: "string", description: "The Python source code to execute." } }, required: ["code"] } } },
+  { type: "function", function: { name: "run_python", description: "Execute real Python (CPython) in a secure, offline sandbox to compute, analyse data, and CREATE CHARTS. The full standard library plus numpy, pandas, matplotlib, scipy, sympy, openpyxl (read/write Excel .xlsx), beautifulsoup4 (parse HTML), and geopandas with shapely & pyproj (geospatial — plot points/lines/polygons and choropleth MAPS as a matplotlib figure; note there is no online street/satellite basemap offline, so for a street-map backdrop use a connected map tool instead), python-pptx (build editable PowerPoint .pptx decks — used by the 'presentation' skill), python-docx (build editable Word .docx documents — 'from docx import Document'; save to /work/out), and Pillow/PIL (open, edit and save raster images — recolour, adjust, crop, resize, filter, composite/overlay, and draw shapes or text) are available — import them normally. These are the ONLY third-party packages, and there is NO network access, so do not import anything else (e.g. requests, scikit-learn, plotly, contextily) — it will fail. Use print() for text output. Files live in a virtual workspace at /work/uploads/: the user's attached files are there — documents (PDF, Word) are ALREADY extracted to plain text, so just open() and read them (do NOT try to PDF-parse); data files (CSV, Excel, JSON) are as-is for pandas. IMAGES the user attached are there too as REAL image files at /work/uploads/<filename> — to edit an attached photo, open it with Pillow (from PIL import Image; im = Image.open('/work/uploads/<name>')), make the change, and im.save('/work/out/<name>') — do NOT search the user's folders for it and do NOT claim you can't find it. (Note: Pillow does pixel/colour edits, not semantic object selection — to repaint a specific object like 'the building' while keeping the rest of the photo, use the generate_image tool's source_image edit mode instead.) SAVE any output (files, charts) to /work/out/ (kept for the user). To hand BULK DATA to a create_artifact page (route polylines, coordinate lists, big tables) write it to /work/artifacts/<name>.json instead — those files are NOT saved to the user's disk and are NOT printed back to you; you then reference them in the HTML as {{data:<name>.json}}. Unlike the rest of /work, files in /work/artifacts PERSIST across messages in this conversation, so you can build a dataset in one message and read it back (or render it) in a later one. Always prefer that over print()ing the values and copying them into the HTML yourself. Your /work files (and Python variables) PERSIST across run_python calls within the same turn — a chart PNG you saved in one call is still there in the next — and reset only when the user sends a new message. So you can build a task up across calls (e.g. generate chart PNGs in one call, then read them to build a PowerPoint in another). (For a plain read/summary of a document with no computation, prefer the read_file tool — no code or permission needed.) Use normal Python I/O — open(), pathlib, pd.read_csv('/work/uploads/data.csv'). TO SHOW A GRAPH, build a matplotlib figure (e.g. `import matplotlib.pyplot as plt; plt.plot(x, y)`) — it is rendered INLINE in the chat automatically — you do NOT need to save it (do NOT hand-draw ASCII or SVG). Only use plt.savefig('/work/out/name.png') if the user explicitly wants a saved file — /work/out is an in-memory scratch path, but anything you write there is copied to a real folder on the user's disk and the tool result reports that real absolute path. When telling the user where a file was saved, quote the real path from the tool result (the line marked SAVED TO DISK); NEVER tell the user the file is at /work/out (they cannot open that). No network access. Do not read/write paths outside /work.", parameters: { type: "object", properties: { code: { type: "string", description: "The Python source code to execute." } }, required: ["code"] } } },
   { type: "function", function: { name: "create_artifact", description: "Render a rich, self-contained HTML page inline in the chat, with a Save button (saves as a .html file the user can open in any browser). Use this for polished deliverables — formatted reports, dashboards, styled tables/cards, or simple interactive views — when plain markdown isn't enough. The HTML MUST be fully self-contained: inline all CSS in a <style> tag and any JS in a <script> tag; NO external URLs, fonts, images, or CDNs (they are blocked) — EXCEPT for maps, where you MAY load Leaflet from unpkg/jsdelivr and OpenStreetMap/Mapbox map tiles (use these to draw a street map with real data points). To include a chart, map or image you generated earlier THIS TURN (e.g. a matplotlib chart from run_python, a map, or a photo from generate_image — great for building an image slide deck), use the placeholder token as the image source: <img src=\"{{figure:1}}\"> for the first such image, {{figure:2}} for the second, and so on (in the order they were created) — LexiChat substitutes the real image. To include an image the USER ATTACHED this turn (e.g. a logo or a photo to place on slides), reference it as <img src=\"{{upload:1}}\"> for the first attached image, {{upload:2}} for the second, etc. (in attachment order) — LexiChat substitutes it. Do NOT paste base64 image data yourself. Any other images must be data: URIs. To embed BULK DATA (a route polyline, a coordinate list, a long table) that you produced in run_python, do NOT retype the values into this HTML — that is slow and loses points. Instead write the data to /work/artifacts/<name>.json in run_python, then put the token {{data:<name>.json}} where the values go, e.g. <script>const DATA = {{data:route.json}};</script>. LexiChat splices in the exact file contents. It renders in a sandboxed frame. Do NOT put your final prose answer inside the artifact — write a short summary in chat and put the rich content in the artifact. To show ANY HTML (a page, a map, a dashboard) you MUST call THIS tool with the HTML — NEVER paste raw HTML, a <script>, or an <iframe> into your chat reply, which renders as source text, not a page.", parameters: { type: "object", properties: { title: { type: "string", description: "Short title for the artifact (used as the saved filename and header)." }, html: { type: "string", description: "A complete, self-contained HTML document (or fragment) with all CSS/JS inlined and no external resources." } }, required: ["title", "html"] } } },
   { type: "function", function: { name: "generate_image", description: "Generate an image from a text description, OR edit an image the user attached, using the local offline image model (stable-diffusion). Use it whenever the user asks you to create, draw, generate, illustrate, paint, or make an image — and ALSO when they ask you to edit, restyle, or repaint an attached photo (e.g. 'make the building in this photo pink'): for that, pass source_image. The result is displayed inline automatically — refer to it as \"shown above\"; do NOT output an image URL or a markdown image. To put a result into a SLIDE DECK or document: embed it in a create_artifact HTML slide via its placeholder <img src=\"{{figure:N}}\"> (N = the order it was generated), OR read it in run_python from the path the tool result reports (/work/data/generated_image_N.png) and add it to a .pptx with python-pptx add_picture. You do NOT need to re-generate images to reuse them. Note: source_image edits the WHOLE image toward the prompt (image-to-image) — great for recolouring/restyling a scene or object while keeping the composition, but NOT pixel-exact; for precise deterministic edits (exact colour swap, crop, overlay text) use run_python with Pillow instead.", parameters: { type: "object", properties: { prompt: { type: "string", description: "A detailed description of the image to create — or, when editing, of the desired end result (describe the whole scene as it should look after the edit, e.g. 'a street with the foreground building painted pink')." }, negative_prompt: { type: "string", description: "Things to avoid in the image (optional)." }, source_image: { type: "string", description: "To EDIT an attached image instead of creating a new one: the /work/uploads/<filename> path of the image the user attached to this message. Omit to generate from scratch. Only attached images can be used." }, strength: { type: "number", description: "Edit strength for source_image, 0.0–1.0 (optional, default 0.6, or 0.85 with mask_regions). Lower stays closer to the original; higher diverges more. Ignored without source_image." }, mask_regions: { type: "string", description: "To change ONLY part of source_image and keep the rest pixel-identical (e.g. 'the building', 'the sky'): region(s) as normalized (0..1) shapes separated by ';' — 'rect x y w h' or 'ellipse cx cy rx ry'. Estimate the region from the image you can see, e.g. 'rect 0 0.35 0.45 0.65'. If the user painted a region on the image it is used automatically (omit this). Omit to edit the whole image." }, size: { type: "integer", description: "New images: square size in px (512/768/1024). When editing: caps the longer edge; original aspect ratio is kept (optional)." }, steps: { type: "integer", description: "Sampling steps; Turbo models want ~4 (optional)." }, seed: { type: "integer", description: "Seed for reproducibility (optional)." } }, required: ["prompt"] } } },
 ];
@@ -1061,7 +1061,7 @@ export function McpAppFrame({ ui, toolName, onSend }: { ui: ToolUi; toolName: st
             post({ jsonrpc: "2.0", id, result: {
               protocolVersion: "2026-01-26",
               hostCapabilities: {},
-              hostInfo: { name: "LexiChat", version: "2.4.11" },
+              hostInfo: { name: "LexiChat", version: "2.4.12" },
               hostContext: {
                 toolInfo: {
                   id: "1",
@@ -1899,10 +1899,10 @@ export default function App() {
   const profileSwitchRef = useRef<((id: string) => Promise<void>) | null>(null);
   const handleResetRef = useRef<(() => Promise<void>) | null>(null);
   const forceAllowCodeToolsRef = useRef(false); // dev-control transient override for allow_code_tools
-  // Text payloads run_python wrote to /work/artifacts THIS turn, keyed by filename, backing the
-  // `{{data:name}}` token in create_artifact HTML. Held here rather than on a message because the
-  // content deliberately never round-trips through the backend or the model — only the name does.
-  // Cleared at the start of every turn (see send()), so a token can only reach this turn's data.
+  // Text payloads run_python wrote to /work/artifacts, keyed by filename, backing the
+  // `{{data:name}}` token in create_artifact HTML. Kept for the whole CONVERSATION, not one turn:
+  // the backend persists the same files and re-stages them into /work/artifacts each turn, so a
+  // dataset built in one message can be rendered in a later one. Cleared on reset / new chat.
   const turnDataFilesRef = useRef<Map<string, PyDataFile>>(new Map());
   // Result of the artifact inline-script probe, surfaced in /dev/state for headless diagnosis.
   const artifactProbeResultRef = useRef<boolean | null>(null);
@@ -2178,7 +2178,9 @@ export default function App() {
       await invoke("respond_python_result", { args: {
         request_id: e.payload.request_id,
         output: res.output, error: res.error, images: res.images, out_files: res.outFiles,
-        data_files: (res.dataFiles ?? []).map(f => ({ name: f.name, chars: f.text.length, error: f.error ?? null })),
+        // text is persisted to disk by the backend so the file is re-staged into /work/artifacts on
+        // later turns; the model is still only told the name and size.
+        data_files: (res.dataFiles ?? []).map(f => ({ name: f.name, chars: f.text.length, error: f.error ?? null, text: f.text })),
       } }).catch(() => {});
     }).then(u => cleanup.push(u));
 
@@ -2242,15 +2244,38 @@ export default function App() {
       if (params.model) setSelectedModel(String(params.model));
       if (typeof params.allowCodeTools === "boolean") forceAllowCodeToolsRef.current = params.allowCodeTools;
       if (params.reasoning || params.numCtx != null || params.model) await new Promise(r => setTimeout(r, 250)); // let state + sendRef settle
+      // send() silently returns if a run is already in flight, which used to leave this listener
+      // waiting on nothing and the HTTP caller timing out after 900s with a misleading "is the
+      // window open?". Wait briefly for the previous run to settle, then refuse clearly.
+      if (isRunningRef.current) {
+        const settleBy = Date.now() + 30_000;
+        while (isRunningRef.current && Date.now() < settleBy) await new Promise(r => setTimeout(r, 200));
+        if (isRunningRef.current) {
+          report({ error: "busy — a run is already in flight; retry when it finishes" });
+          return;
+        }
+      }
       drainCodeToolCalls(); // clear any stale code-tool log
-      const startLen = messagesRef.current.length;
+      // Anchor the trace to the LAST MESSAGE ID rather than an array length. A length snapshot
+      // silently truncated a trace to one message once, which read as "the model called no tools"
+      // when it had in fact run five — an index is not a stable identity if the list is rebuilt.
+      const anchorId = messagesRef.current[messagesRef.current.length - 1]?.id ?? null;
+      const sliceFromAnchor = () => {
+        const all = messagesRef.current;
+        if (anchorId === null) return all;
+        const i = all.findIndex(m => m.id === anchorId);
+        return i === -1 ? all : all.slice(i + 1);   // anchor gone → conversation reset, take it all
+      };
       autoApproveControlRef.current = true;
       const t0 = performance.now();
       try {
+        // NOTE: send() awaits invoke("send_message"), which runs the ENTIRE agent loop — it does
+        // not return early. The settle loop below is therefore only a short backstop for isRunning
+        // lagging the await; it is not what bounds the run. The real bound is the dev_await
+        // timeout on the Rust side (DEV_RUN_TIMEOUT_SECS).
         await sendRef.current?.(message);
-        // send() returns before the agent loop finishes; wait for isRunning to settle to false.
         await new Promise(r => setTimeout(r, 250)); // grace for isRunning → true
-        const deadline = Date.now() + 880_000;
+        const deadline = Date.now() + 3_500_000;
         while (isRunningRef.current && Date.now() < deadline) {
           await new Promise(r => setTimeout(r, 150));
         }
@@ -2260,7 +2285,8 @@ export default function App() {
       autoApproveControlRef.current = false;
       const elapsedMs = Math.round(performance.now() - t0);
       const codeToolCalls = drainCodeToolCalls();
-      const trace = messagesRef.current.slice(startLen).map(m => ({
+      const captured = sliceFromAnchor();
+      const trace = captured.map(m => ({
         role: m.role,
         text: m.text || undefined,
         toolCalls: m.toolCalls?.map(tc => ({ name: tc.name, args: tc.args })),
@@ -2271,9 +2297,12 @@ export default function App() {
         artifact: m.artifact ? { title: m.artifact.title, htmlLen: m.artifact.html.length } : undefined,
         status: m.status,
       }));
-      const finalAnswer = [...messagesRef.current.slice(startLen)].reverse()
+      const finalAnswer = [...captured].reverse()
         .find(m => m.role === "assistant" && !!m.text)?.text;
-      report({ finalAnswer, elapsedMs, codeToolCalls, messages: trace });
+      // totalMessages lets a caller spot a suspiciously thin trace instead of reading it as
+      // "nothing happened" — the mistake that made a five-tool run look like zero.
+      report({ finalAnswer, elapsedMs, codeToolCalls, messages: trace,
+               totalMessages: messagesRef.current.length, capturedMessages: captured.length });
     }).then(u => cleanup.push(u));
 
     // run_python produced output files but no sandbox folder is configured to save them. Ask the
@@ -2359,9 +2388,6 @@ export default function App() {
     text = text.trim();
     if ((!text && attachedFiles.length === 0) || isRunning || !selectedModel) return;
 
-    // New turn: drop last turn's /work/artifacts payloads. The sandbox wipes /work on the first
-    // run_python of a turn, so a stale {{data:name}} must resolve to a clear error, not old data.
-    turnDataFilesRef.current = new Map();
 
     // Profile overrides global settings; chatParams toggles can further restrict
     const effectiveEnabledTools = activeProfile?.enabledTools ?? settings.enabledTools;
@@ -2627,6 +2653,9 @@ export default function App() {
     // fresh chat (also covers profile switches, which call handleReset).
     stopActiveRun();
     await invoke("reset_conversation");
+    // Artifact data is conversation-scoped: a new chat must not resolve a {{data:}} token against
+    // the previous conversation's dataset.
+    turnDataFilesRef.current = new Map();
     setMessages([]);
     setActiveConversationId(null);
     setDebugClearKey(k => k + 1);
@@ -3004,7 +3033,7 @@ export default function App() {
               Runs entirely on-device via Ollama. Reads files, searches the web,
               calls APIs, and keeps your data private.
             </p>
-            <div className="about-version">Version 2.4.11</div>
+            <div className="about-version">Version 2.4.12</div>
 
             <div className="about-support">
               <div className="about-support-label">Support the project</div>

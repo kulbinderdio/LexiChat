@@ -705,6 +705,17 @@ fn tool_results_dir() -> std::path::PathBuf {
     dir
 }
 
+/// Where `/work/artifacts` payloads are kept so they survive BETWEEN turns. The Pyodide workspace
+/// is wiped on the first run_python of each turn, so a dataset built in one turn used to vanish
+/// before it could be aggregated or rendered in the next (observed: a 45-call journey matrix lost
+/// to a FileNotFoundError). Like offloaded tool results, these live on real disk and are re-staged
+/// into `/work/artifacts` at the start of every turn.
+pub fn artifact_data_dir() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join("lexichat-artifact-data");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 /// Per-run staging area for skill resource files. `use_skill` copies a loaded skill's resources
 /// here; `stage_python_files` then routes them into /work/skills/ (not /work/data/) so run_python
 /// can read a template/helper the skill ships with.
@@ -1378,13 +1389,27 @@ pub async fn agent_loop<R: tauri::Runtime>(
     let cap = if tool_cap == 0 { DEFAULT_TOOL_CAP } else { tool_cap };
     // Oversized tool results are offloaded here for run_python to read (interactive chat only —
     // jobs can't run code). run_python is given read access to this dir via dispatch_paths.
-    let results_dir = tool_results_dir();
+    // Interactive chats keep working files under the conversation so they survive for as long as
+    // the chat does; background jobs (silent) have no conversation and use the swept temp dir.
+    let (results_dir, artifacts_dir, ephemeral) = {
+        let conv = if silent { None } else {
+            app.try_state::<crate::AppState>().and_then(|st| {
+                let d = crate::conversation_files_dir(&st, "data")?;
+                let a = crate::conversation_files_dir(&st, "artifacts")?;
+                Some((d, a))
+            })
+        };
+        match conv {
+            Some((d, a)) => (d, a, false),
+            None => (tool_results_dir(), artifact_data_dir(), true),
+        }
+    };
     // Skill resources loaded via use_skill are copied here and staged into /work/skills for run_python.
     let skill_staging = skill_staging_dir();
     let dispatch_paths: Vec<String> = if silent {
         sandbox_paths.clone()
     } else {
-        clean_tool_results(&results_dir);
+        if ephemeral { clean_tool_results(&results_dir); }
         // Fresh turn: reset the per-turn image counter so generated_image_N.png restarts at 1 and
         // lines up with {{figure:N}}. We deliberately do NOT delete previous turns' generated images
         // — they persist (cleaned by the 6h TTL above) so a follow-up turn ("now build the deck")
@@ -1394,6 +1419,9 @@ pub async fn agent_loop<R: tauri::Runtime>(
         let _ = std::fs::create_dir_all(&skill_staging);
         let mut v = sandbox_paths.clone();
         v.push(results_dir.to_string_lossy().into_owned());
+        // Artifact data from earlier turns, re-staged into /work/artifacts.
+        if ephemeral { clean_tool_results(&artifacts_dir); }
+        v.push(artifacts_dir.to_string_lossy().into_owned());
         v.push(skill_staging.to_string_lossy().into_owned());
         v
     };
@@ -2427,7 +2455,10 @@ fn stage_python_files(sandbox_paths: &[String]) -> Vec<serde_json::Value> {
             // A staged dir → /work/data, EXCEPT the skill-resources dir which goes to /work/skills so
             // a skill's bundled template/helper is where its instructions say. The offloaded-results
             // dir → /work/data, so run_python can read a large tool result that didn't fit in context.
-            let dest_prefix = if path == skill_staging_dir() { "skills" } else { "data" };
+            let named = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let dest_prefix = if path == skill_staging_dir() { "skills" }
+                else if named == "artifacts" || path == artifact_data_dir() { "artifacts" }
+                else { "data" };
             if let Ok(entries) = std::fs::read_dir(path) {
                 for e in entries.flatten() {
                     let ep = e.path();
