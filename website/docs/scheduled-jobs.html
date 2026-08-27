@@ -32,6 +32,7 @@ tailwind.config = {
   .gradient-text { background: linear-gradient(135deg, #6366f1 0%, #a78bfa 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
   .glass { background: rgba(255,255,255,0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
   .prose-code { font-family: 'SF Mono', 'Fira Code', monospace; }
+  .shot { border: 1px solid rgb(226 232 240); border-radius: 0.9rem; box-shadow: 0 20px 45px rgba(15,23,42,0.10); background: #fff; }
 </style>
 </head>
 <body class="bg-slate-50 text-slate-900 antialiased">
@@ -62,6 +63,7 @@ tailwind.config = {
       <a href="#overview" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Overview</a>
       <a href="#opening" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Opening the Jobs panel</a>
       <a href="#creating" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Creating a job</a>
+      <a href="#ai-draft" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Drafting a job with AI</a>
       <a href="#step-builder" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Step Builder (workflows)</a>
       <a href="#schedules" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Schedule types</a>
       <a href="#profile-tools" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Profile &amp; tools</a>
@@ -106,7 +108,8 @@ tailwind.config = {
       <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
         <span class="material-symbols-outlined text-accent">schedule</span> Opening the Jobs Panel
       </h2>
-      <p class="text-slate-600 mb-4">Click the <strong>clock icon</strong> in the toolbar (top right, next to the Settings gear). The Jobs panel opens as a modal with two tabs:</p>
+      <p class="text-slate-600 mb-5">Click the <strong>clock icon</strong> in the toolbar (top right, next to the Settings gear). The Jobs panel opens as a modal with two tabs:</p>
+      <figure class="mb-5"><img src="../resources/scheduledTasksAIJobBuilder.png" alt="Scheduled Jobs panel listing six jobs with schedule badges, last-run and next-run times, Edit and Run buttons, and the AI job drafting box at the bottom" class="w-full shot" loading="lazy"/></figure>
       <div class="grid sm:grid-cols-2 gap-4">
         <div class="bg-white border border-slate-200 rounded-xl p-4">
           <div class="font-semibold text-sm mb-1">Scheduled Jobs tab</div>
@@ -126,6 +129,7 @@ tailwind.config = {
         <span class="material-symbols-outlined text-accent">add_circle</span> Creating a Job
       </h2>
       <p class="text-slate-600 mb-5">Click <strong>+ New Job</strong> at the bottom of the jobs list. The job form has these fields:</p>
+      <figure class="mb-5"><img src="../resources/scheduledTasksNewJob.png" alt="The new job form showing job name, tool connections, model, a Daily schedule at 09:00 with Run if missed ticked, the Step builder, and a custom system prompt" class="w-full shot" loading="lazy"/></figure>
       <div class="overflow-hidden bg-white border border-slate-200 rounded-xl mb-5">
         <table class="w-full text-sm">
           <thead><tr class="bg-slate-50 border-b border-slate-200">
@@ -137,6 +141,7 @@ tailwind.config = {
             <tr><td class="px-4 py-3 font-medium">Enabled</td><td class="px-4 py-3 text-slate-600">Toggle the job on or off without deleting it.</td></tr>
             <tr><td class="px-4 py-3 font-medium">Profile</td><td class="px-4 py-3 text-slate-600">Which profile's tools and settings this job uses. See <a href="#profile-tools" class="text-accent hover:underline">Profile &amp; tools</a>.</td></tr>
             <tr><td class="px-4 py-3 font-medium">Schedule</td><td class="px-4 py-3 text-slate-600">When the job runs. See <a href="#schedules" class="text-accent hover:underline">Schedule types</a>.</td></tr>
+            <tr><td class="px-4 py-3 font-medium">Run if missed</td><td class="px-4 py-3 text-slate-600">Daily and Weekly only. If the machine was asleep or busy at the scheduled time, run as soon as it wakes instead of skipping to the next occurrence. On by default. However long the machine was off, you get <strong>one</strong> catch-up run, never a backlog.</td></tr>
             <tr><td class="px-4 py-3 font-medium">Model</td><td class="px-4 py-3 text-slate-600">Which Ollama model to use. Auto-populated from the profile's default.</td></tr>
             <tr><td class="px-4 py-3 font-medium">Prompt</td><td class="px-4 py-3 text-slate-600">The user message sent to the model on each run. Can reference today's date — it's injected automatically.</td></tr>
             <tr><td class="px-4 py-3 font-medium">System Prompt Override</td><td class="px-4 py-3 text-slate-600">Optional. Replaces the profile's system prompt for this job only.</td></tr>
@@ -147,6 +152,31 @@ tailwind.config = {
       </div>
       <p class="text-slate-600 text-sm mb-3">Click <strong>Save Job</strong> to save. The job is immediately added to the scheduler.</p>
       <p class="text-slate-600 text-sm">Want to define a precise sequence of tool calls? Click <strong>Step builder</strong> to open the visual workflow editor. See <a href="#step-builder" class="text-accent hover:underline">Step Builder</a> below.</p>
+    </section>
+
+    <!-- AI drafting -->
+    <section id="ai-draft" class="mb-12">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">auto_awesome</span> Drafting a Job with AI
+      </h2>
+      <p class="text-slate-600 mb-4">If you would rather describe the outcome than fill in the form, use the drafting box at the bottom of the Jobs panel (shown in the <a href="#opening" class="text-accent hover:underline">screenshot above</a>). Write what you want in plain English — for example:</p>
+      <div class="bg-slate-50 border border-slate-200 rounded-xl p-4 text-sm text-slate-700 prose-code mb-5">
+        Every weekday at 7am, brief me on UK energy policy from gov.uk and Hansard, skip anything you already covered, and save it as a PDF in ~/Briefings.
+      </div>
+      <p class="text-slate-600 mb-4">LexiChat turns that into a complete job — schedule, model, steps and output file — and opens it in the form so you can check and adjust it before saving. Two buttons:</p>
+      <div class="grid sm:grid-cols-2 gap-4 mb-5">
+        <div class="bg-white border border-slate-200 rounded-xl p-4">
+          <div class="font-semibold text-sm mb-1">Draft it</div>
+          <div class="text-sm text-slate-500">Builds the job and opens it for review. Nothing runs.</div>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4">
+          <div class="font-semibold text-sm mb-1">Draft &amp; dry-run</div>
+          <div class="text-sm text-slate-500">Builds it, saves it, and runs it once immediately so you can see the real result in Run History before trusting it to a schedule.</div>
+        </div>
+      </div>
+      <div class="bg-blue-50 border border-blue-100 rounded-xl p-4 text-sm text-slate-700">
+        Both leave the job <strong>disabled</strong>. A drafted job never starts running on its own — you enable it once you are happy with what it produced.
+      </div>
     </section>
 
     <!-- Step Builder -->
@@ -219,11 +249,11 @@ tailwind.config = {
       <div class="space-y-3">
         <div class="bg-white border border-slate-200 rounded-xl p-4">
           <div class="flex items-center gap-2 mb-1"><span class="font-semibold text-accent text-sm">Daily</span><span class="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">HH:MM</span></div>
-          <p class="text-sm text-slate-600">Runs once per day at the specified local time. The scheduler checks every 30 seconds, so the job fires within 30 seconds of the target minute. Jobs only run once per day — if the app wasn't running at the target time, the job waits until the next day.</p>
+          <p class="text-sm text-slate-600">Runs once per day at the specified local time. The scheduler checks every 30 seconds, so the job fires within 30 seconds of the target minute. If the machine was asleep or the app wasn't running then, <strong>Run if missed</strong> (on by default) starts the job within 30 seconds of the app coming back, rather than skipping to tomorrow. Untick it for jobs that are only useful on time — a 7am briefing delivered at 6pm is just noise.</p>
         </div>
         <div class="bg-white border border-slate-200 rounded-xl p-4">
           <div class="flex items-center gap-2 mb-1"><span class="font-semibold text-accent text-sm">Weekly</span><span class="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">Day + HH:MM</span></div>
-          <p class="text-sm text-slate-600">Runs once per week on the chosen day and time. Same 30-second precision as Daily.</p>
+          <p class="text-sm text-slate-600">Runs once per week on the chosen day and time. Same 30-second precision as Daily, and the same <strong>Run if missed</strong> behaviour — a Monday job missed because the machine was off runs when you next open it, rather than waiting a further week.</p>
         </div>
         <div class="bg-white border border-slate-200 rounded-xl p-4">
           <div class="flex items-center gap-2 mb-1"><span class="font-semibold text-accent text-sm">Interval</span><span class="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">Every N hours</span></div>
@@ -234,7 +264,10 @@ tailwind.config = {
           <p class="text-sm text-slate-600">Never fires automatically. Run it by clicking <strong>▶ Run</strong> in the job list. Useful for ad-hoc tasks you want to repeat with the same prompt and tools each time.</p>
         </div>
       </div>
-      <p class="text-slate-500 text-sm mt-4">The <strong>Next run</strong> time is shown on each job row so you can verify the schedule at a glance.</p>
+      <p class="text-slate-500 text-sm mt-4">The <strong>Next run</strong> time is shown on each job row so you can verify the schedule at a glance. A job with an outstanding missed slot reads <strong>Due now</strong> instead.</p>
+      <div class="bg-blue-50 border border-blue-100 rounded-xl p-4 text-sm text-slate-700 mt-4">
+        However long the machine was off, a caught-up job runs <strong>once</strong> — three weeks away gives you one run, not twenty-one. When several jobs come due together on wake, they are started 30 seconds apart so they don't all hit the model at the same moment.
+      </div>
     </section>
 
     <!-- Profile & Tools -->
@@ -308,7 +341,18 @@ tailwind.config = {
       <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
         <span class="material-symbols-outlined text-accent">history</span> Run History
       </h2>
-      <p class="text-slate-600 mb-4">The <strong>Run History</strong> tab shows every job execution. Each row shows:</p>
+      <p class="text-slate-600 mb-5">The <strong>Run History</strong> tab opens on a calendar of the last 12 weeks — one row per job, one cell per day — above the full list of runs.</p>
+      <figure class="mb-5"><img src="../resources/scheduledTasksHistory.png" alt="Run History showing the 12-week job-by-day calendar with a colour legend, a day popover listing that day's run, and the list of individual runs below" class="w-full shot" loading="lazy"/></figure>
+      <p class="text-slate-600 mb-4">Cells are coloured by <strong>outcome</strong> rather than volume, so the calendar answers the question that matters — did each job actually run, and did it work?</p>
+      <div class="grid sm:grid-cols-2 gap-3 mb-5">
+        <div class="bg-white border border-slate-200 rounded-xl p-3 text-sm"><span class="font-semibold text-green-600">Ran</span> — every run that day succeeded</div>
+        <div class="bg-white border border-slate-200 rounded-xl p-3 text-sm"><span class="font-semibold text-red-500">Failed</span> — at least one run that day errored</div>
+        <div class="bg-white border border-slate-200 rounded-xl p-3 text-sm"><span class="font-semibold text-amber-500">Expected, no run</span> — a slot came and went with nothing recorded</div>
+        <div class="bg-white border border-slate-200 rounded-xl p-3 text-sm"><span class="font-semibold text-slate-400">Not scheduled</span> — nothing was due that day</div>
+      </div>
+      <p class="text-slate-600 mb-5">Click any day to see that day's runs — start time, duration, and a preview — with <strong>Show in list</strong> to jump to the full entry below. Click a job's name to filter the list to it.</p>
+      <p class="text-slate-500 text-sm mb-5">Rows tagged <strong>manual</strong>, <strong>interval</strong> or <strong>off</strong> never show a missed-run marker: an on-demand job has no slot to miss, an hourly one has no single daily slot, and a disabled job can't be judged against a schedule it wasn't following. Days older than the stored history are marked separately rather than counted as missed.</p>
+      <p class="text-slate-600 mb-4">Below the calendar, every execution is listed in full. Each row shows:</p>
       <div class="grid sm:grid-cols-2 gap-3 mb-5">
         <div class="bg-white border border-slate-200 rounded-xl p-3 text-sm"><span class="font-semibold">Status badge</span> — green <span class="text-green-600 font-semibold">✓ OK</span> or red <span class="text-red-500 font-semibold">✕ Error</span></div>
         <div class="bg-white border border-slate-200 rounded-xl p-3 text-sm"><span class="font-semibold">Profile</span> — which profile the job ran with</div>
