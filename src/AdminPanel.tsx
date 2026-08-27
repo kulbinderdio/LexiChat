@@ -1371,7 +1371,7 @@ function ToolsTab({ settings, onChange }: { settings: AppSettings; onChange: (s:
           <span className="tool-icon">📖</span>
           <div className="admin-row-text">
             <span className="admin-row-title">Persistent Wiki Memory (global default)</span>
-            <span className="admin-row-sub">Gives the model wiki_read, wiki_write, wiki_search, wiki_patch, wiki_list and wiki_delete tools to store and recall knowledge across conversations. Stored as markdown files in ~/.local/share/lexichat/wiki/. Individual profiles can override this in their settings.</span>
+            <span className="admin-row-sub">Gives the model wiki_read, wiki_write, wiki_append, wiki_patch, wiki_search, wiki_list, wiki_delete and wiki_lint tools to store and recall knowledge across conversations. Stored as markdown files in LexiChat's data folder. Individual profiles can override this in their settings.</span>
           </div>
         </label>
       </section>
