@@ -1912,7 +1912,11 @@ pub async fn agent_loop<R: tauri::Runtime>(
         }
 
         // Dispatch each tool call
+        let mut answered = 0usize;
         for call in &tool_calls {
+            // Stop may have been pressed while the step was still streaming, before this loop
+            // began. Don't start another outbound call — remaining ones are closed out below.
+            if cancel.load(Ordering::SeqCst) { break; }
             let name = &call.function.name;
             let args = &call.function.arguments;
             let pretty_args = serde_json::to_string_pretty(args).unwrap_or_default();
@@ -2156,6 +2160,14 @@ pub async fn agent_loop<R: tauri::Runtime>(
                 name: Some(name.clone()),
                 images: None,
             });
+            answered += 1;
+        }
+
+        // Any call left unanswered by a Stop gets an explicit cancelled result, so the next
+        // user message doesn't make the model re-run it thinking it never returned.
+        if answered < tool_calls.len() {
+            let mut conv = conversation.lock().unwrap();
+            close_unanswered_tool_calls(&mut conv, &tool_calls, answered);
         }
     }
 
@@ -2533,6 +2545,33 @@ async fn dispatch_tool<R: tauri::Runtime>(
 pub struct PyResult {
     pub output: String,
     pub images: Vec<String>,
+}
+
+/// Give every tool call that never produced a result a matching `tool` message.
+///
+/// Pressing Stop breaks out of the dispatch loop before the result is recorded, which leaves an
+/// assistant turn whose `tool_calls` have no answer. Both the wire format and the model read that
+/// as "the call never came back": on the user's next message the model re-issues it, announcing
+/// that the results didn't come through. Closing the calls out says cancelled instead of silent.
+pub(crate) fn close_unanswered_tool_calls(
+    conv: &mut Vec<WireMessage>,
+    calls: &[WireToolCall],
+    answered: usize,
+) {
+    for call in calls.iter().skip(answered) {
+        conv.push(WireMessage {
+            role: "tool".into(),
+            content: Some(
+                "[Cancelled: the user pressed Stop before this call returned, so its result is \
+                 unknown. Do NOT re-run it or report it as failed — only run it again if the user \
+                 asks for it again.]".into(),
+            ),
+            tool_calls: None,
+            tool_call_id: call.id.clone(),
+            name: Some(call.function.name.clone()),
+            images: None,
+        });
+    }
 }
 
 /// Stage the run's attached files into the Pyodide workspace payload: each attachment becomes
@@ -3222,6 +3261,50 @@ mod tests {
         assert_eq!(strip_http_status_line("HTTP 404\n{\"e\":1}"), "{\"e\":1}");
         assert_eq!(strip_http_status_line("[1,2,3]"), "[1,2,3]");            // no wrapper
         assert_eq!(strip_http_status_line("HTTPS notes\nx"), "HTTPS notes\nx"); // not a status line
+    }
+
+    /// Stop pressed mid-dispatch used to leave an assistant turn whose tool_calls had no
+    /// matching `tool` message. The model read the gap as "no result yet" and re-ran the call
+    /// on the user's next message — a stopped TED query firing again unasked.
+    #[test]
+    fn cancelled_tool_calls_get_an_explicit_result() {
+        let calls = vec![
+            WireToolCall { id: Some("a".into()),
+                function: WireToolFunction { name: "ted_query".into(), arguments: serde_json::json!({}) } },
+            WireToolCall { id: None,
+                function: WireToolFunction { name: "web_search".into(), arguments: serde_json::json!({}) } },
+        ];
+        let mut conv: Vec<WireMessage> = Vec::new();
+        close_unanswered_tool_calls(&mut conv, &calls, 0);
+
+        assert_eq!(conv.len(), 2, "every dangling call needs an answer");
+        assert!(conv.iter().all(|m| m.role == "tool"));
+        assert_eq!(conv[0].name.as_deref(), Some("ted_query"));
+        assert_eq!(conv[0].tool_call_id.as_deref(), Some("a"), "id must link back to the call");
+        assert_eq!(conv[1].name.as_deref(), Some("web_search"));
+        let text = conv[0].content.as_deref().unwrap();
+        assert!(text.contains("Cancelled"), "must say cancelled, not look like an empty result");
+        assert!(text.contains("Do NOT re-run"), "must not invite a retry");
+    }
+
+    /// Calls that DID return keep their real results — only the tail is backfilled.
+    #[test]
+    fn already_answered_tool_calls_are_left_alone() {
+        let calls = vec![
+            WireToolCall { id: None,
+                function: WireToolFunction { name: "first".into(), arguments: serde_json::json!({}) } },
+            WireToolCall { id: None,
+                function: WireToolFunction { name: "second".into(), arguments: serde_json::json!({}) } },
+        ];
+        let mut conv: Vec<WireMessage> = Vec::new();
+        close_unanswered_tool_calls(&mut conv, &calls, 1);
+        assert_eq!(conv.len(), 1);
+        assert_eq!(conv[0].name.as_deref(), Some("second"));
+
+        // A fully answered step adds nothing at all.
+        let mut none: Vec<WireMessage> = Vec::new();
+        close_unanswered_tool_calls(&mut none, &calls, 2);
+        assert!(none.is_empty());
     }
 
     #[test]
