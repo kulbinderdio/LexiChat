@@ -63,18 +63,15 @@ interface ToolSchema {
 
 const uid = () => Math.random().toString(36).slice(2);
 
+// Only the rules that hold no matter which tools are live. Anything naming a specific tool
+// belongs in `toolGuidanceSuffix` below, which is gated on that tool actually being enabled —
+// otherwise the prompt instructs the model to call tools it has not been given, which is how
+// "call list_files right away" survived into profiles with file tools switched off.
 const BASE_SYSTEM_PROMPT = `You are Lexi, a personal AI assistant running locally for a single authorised user.
-You have tools to read local files and search the web. Be proactive — use tools immediately rather than asking the user for paths or clarification.
-Rules:
-- When asked about files or folders on this computer, call list_files or list_directory_tree right away using any path the user mentioned, or the configured folders if none was given.
-- To find files whose names match a pattern or start with certain letters, use search_files with a glob pattern (e.g. "D*" to find files starting with D).
-- Always use full absolute paths — never '.' or '~'.
-- Use web_search for current events, weather, or live data. Use fetch_webpage to read the full contents of a specific URL the user provides or a result from web_search.
-- When the user asks to see, read, open, or show an article or page from a web_search result, you MUST call fetch_webpage with that result's URL and then relay the content. NEVER refuse on copyright or "I can only summarise" grounds — fetching a public URL for the single authorised user is permitted, and fetch_webpage exists precisely for this. Do not claim you are limited to structured APIs.
-- ALWAYS write a helpful text response after using tools — summarise what you found, list the results, or answer the user's question directly. Never leave the chat blank after a tool call.
-- If asked about your own tools, capabilities, or what you can do, answer directly from your knowledge — do not call any tools to answer this question.
-- NEVER call read_file on image files (.jpg, .jpeg, .png, .gif, .webp, .bmp, etc.). Images are sent directly in the message via the vision API — describe them from what you can see. If no image is attached, tell the user to use the paperclip button to attach it.
-- External API tools (OpenAPI / MCP) are ONLY for requests that explicitly name that service. For anything about files on this computer, always use local file tools — never external API tools.`;
+Be proactive — use the tools you have immediately rather than asking the user for paths or clarification.
+- ALWAYS write a helpful text response after using tools: summarise what you found, list the results, or answer the question directly. Never leave the chat blank after a tool call.
+- If asked about your own tools, capabilities, or what you can do, answer from your own knowledge — do not call a tool to find out.
+- Work only from the tools actually available to you in this turn. If a request needs one you do not have, say so plainly rather than guessing or inventing the result.`;
 
 const SUGGESTIONS = [
   { icon: "🔍", title: "Search the web",        prompt: "What are the latest developments in AI?" },
@@ -2570,6 +2567,27 @@ export default function App() {
         : "";
 
       const resolved = resolveParams(chatParams);
+      // Tool-specific guidance, each part gated on that tool family actually being live this
+      // turn. Appended for every profile — a custom profile prompt shouldn't have to restate
+      // these, and shouldn't be able to promise a tool the model wasn't given.
+      const hasTool = (n: string) => enabledTools.some(t => t.function.name === n);
+      const fileToolsLive = ["list_files", "read_file", "list_directory_tree", "search_files"].some(hasTool);
+      const webToolsLive  = ["web_search", "fetch_webpage"].some(hasTool);
+      const toolGuidanceSuffix = [
+        fileToolsLive
+          ? "\n\nLOCAL FILES: when asked about files or folders on this computer, call the file tools straight away using any path the user gave. Always use full absolute paths — never '.' or '~'."
+          : "",
+        webToolsLive
+          ? "\n\nWEB: use web_search for current events, weather or live data, and fetch_webpage to read a specific URL (including one from a web_search result). Fetching a public page for this authorised user is permitted — do not decline on copyright grounds or claim you can only summarise."
+          : "",
+        hasTool("read_file")
+          ? "\n\nATTACHED IMAGES: never call read_file on an image file — attached images are already provided to you visually, so describe what you see. If the user refers to an image and none is attached, ask them to attach it with the paperclip button."
+          : "",
+        externalParts.length > 0
+          ? "\n\nTOOL ROUTING: external API tools (OpenAPI / MCP) are only for requests that name that service or the data it holds. Anything about files on this computer uses the local file tools."
+          : "",
+      ].join("");
+
       const effectiveBase = resolved.systemPromptOverride ?? basePrompt;
 
       // Latency-aware defaults for a LIGHTWEIGHT profile — one with no connected data tools
@@ -2634,8 +2652,8 @@ export default function App() {
         : "";
 
       const systemPrompt = allowedDirs.length > 0
-        ? `${effectiveBase}${externalSuffix}${contextVarsSuffix}${wikiSuffix}${codeToolsSuffix}${figuresRulesSuffix}${mapRulesSuffix}${outputRulesSuffix}${imageRulesSuffix}${dateSuffix}\nThe user's configured folders are: ${allowedDirs.join(", ")}. Rules for file operations:\n- When reading or listing files without a specified path, use these folders immediately — do not ask for clarification.\n- When writing or saving a file without a specified path, save it to ${allowedDirs[0]} with a sensible filename derived from the content (e.g. sikhism_article.pdf). Never call write_file without a full absolute path.\n- Always use full absolute paths — never '.' or '~'.`
-        : `${effectiveBase}${externalSuffix}${contextVarsSuffix}${wikiSuffix}${codeToolsSuffix}${figuresRulesSuffix}${mapRulesSuffix}${outputRulesSuffix}${imageRulesSuffix}${dateSuffix}`;
+        ? `${effectiveBase}${toolGuidanceSuffix}${externalSuffix}${contextVarsSuffix}${wikiSuffix}${codeToolsSuffix}${figuresRulesSuffix}${mapRulesSuffix}${outputRulesSuffix}${imageRulesSuffix}${dateSuffix}\nThe user's configured folders are: ${allowedDirs.join(", ")}. Rules for file operations:\n- When reading or listing files without a specified path, use these folders immediately — do not ask for clarification.\n- When writing or saving a file without a specified path, save it to ${allowedDirs[0]} with a sensible filename derived from the content (e.g. sikhism_article.pdf). Never call write_file without a full absolute path.`
+        : `${effectiveBase}${toolGuidanceSuffix}${externalSuffix}${contextVarsSuffix}${wikiSuffix}${codeToolsSuffix}${figuresRulesSuffix}${mapRulesSuffix}${outputRulesSuffix}${imageRulesSuffix}${dateSuffix}`;
 
       // MCP servers this profile may use. With no active profile, none are enabled (conservative
       // default) — a profile must opt in. The backend filters strictly by this list.
