@@ -97,6 +97,8 @@ tailwind.config = {
         <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">check_circle</span> Click a profile to make it <strong>Active</strong>; the whole app (model, tools, integrations, sandbox) switches with it.</li>
         <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">check_circle</span> <strong>Export / Import</strong> a profile as JSON to move it between machines or share it — re-enter any credentials after import.</li>
         <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">check_circle</span> With <strong>no profile</strong> selected, chats fall back to a conservative safe default (read-only file tools + web, no integrations).</li>
+        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">check_circle</span> <strong>Context Variables</strong> — name/value facts about you (location, timezone, occupation) added to every conversation this profile has, so you don't repeat them. See <a href="memory.html#context-vars" class="text-accent hover:underline">Memory &amp; Context</a>.</li>
+        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">check_circle</span> <strong>Memory</strong> — whether this profile uses the persistent wiki, overriding the global default on the Tools tab. See <a href="memory.html" class="text-accent hover:underline">Memory &amp; Context</a>.</li>
       </ul>
     </section>
 
@@ -108,6 +110,7 @@ tailwind.config = {
       <ul class="space-y-2 text-slate-600 text-sm">
         <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">check_circle</span> Every file tool is still bound by the <a href="#sandbox" class="text-accent hover:underline">Sandbox</a> — it can only touch the folders you've granted.</li>
         <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">check_circle</span> Run Python has an extra global master switch and asks for approval before each run.</li>
+        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">check_circle</span> <strong>🧠 Persistent Wiki Memory</strong> is the global default for long-term memory — it adds the eight <span class="prose-code">wiki_*</span> tools so the model can store and recall knowledge across conversations. Any profile can override it. See <a href="memory.html" class="text-accent hover:underline">Memory &amp; Context</a>.</li>
       </ul>
     </section>
 
@@ -180,7 +183,7 @@ tailwind.config = {
     <!-- Defaults -->
     <section id="defaults" class="mb-16 scroll-mt-24">
       <h2 class="text-xl font-semibold mb-2 flex items-center gap-2"><span class="material-symbols-outlined text-accent">tune</span> Defaults</h2>
-      <p class="text-slate-600 mb-5">Global chat defaults for new conversations. Pick a <strong>Response Style</strong> (Precise / Balanced / Creative), <strong>Response Length</strong> (Short / Medium / Long / Auto) and <strong>Memory</strong> (Standard / Extended). The <strong>Advanced</strong> section exposes raw temperature and top-p — left at <em>model default</em> unless you set them.</p>
+      <p class="text-slate-600 mb-5">Global chat defaults for new conversations. Pick a <strong>Response Style</strong> (Precise / Balanced / Creative), <strong>Response Length</strong> (Short / Medium / Long / Auto) and <strong>Memory</strong> (Standard / Extended — this is the model's context window, 32K or 128K, not the <a href="memory.html" class="text-accent hover:underline">persistent wiki</a>). The <strong>Advanced</strong> section exposes raw temperature and top-p — left at <em>model default</em> unless you set them.</p>
       <figure class="mb-5"><img src="../resources/settings/settings-defaults.png" alt="Defaults tab with response style, length, memory presets and advanced sliders" class="w-full shot" loading="lazy"/></figure>
       <ul class="space-y-2 text-slate-600 text-sm">
         <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">check_circle</span> Profiles can override these, and you can change them per-chat via the sliders icon in the input bar.</li>

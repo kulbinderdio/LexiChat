@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Memory &amp; Context — LexiChat Docs</title>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-NHGZKJ6KE1"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-NHGZKJ6KE1');
+</script>
+<meta name="description" content="How LexiChat remembers — the persistent wiki that carries facts between conversations, and context variables that state who you are up front. Both stored locally as plain files."/>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/>
+<script>
+tailwind.config = {
+  darkMode: 'class',
+  theme: {
+    extend: {
+      fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui'] },
+      colors: { accent: '#6366f1', 'accent-light': '#818cf8', 'accent-dark': '#4f46e5' }
+    }
+  }
+}
+</script>
+<style>
+  body { font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; }
+  .gradient-text { background: linear-gradient(135deg, #6366f1 0%, #a78bfa 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+  .glass { background: rgba(255,255,255,0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+  .prose-code { font-family: 'SF Mono', 'Fira Code', monospace; }
+  .shot { border: 1px solid rgb(226 232 240); border-radius: 0.9rem; box-shadow: 0 20px 45px rgba(15,23,42,0.10); background: #fff; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-900 antialiased">
+
+<!-- ── Nav ─────────────────────────────────────────────────────────────────── -->
+<nav class="fixed top-0 w-full z-50 glass border-b border-slate-200/60">
+  <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+    <a href="../index.html" class="flex items-center gap-2.5">
+      <img src="../resources/lexi1.png" alt="LexiChat" class="w-8 h-8 rounded-xl"/>
+      <span class="font-bold text-lg tracking-tight">LexiChat</span>
+    </a>
+    <div class="hidden md:flex items-center gap-8">
+      <a href="index.html" class="text-sm font-medium text-slate-600 hover:text-accent transition-colors">← All Docs</a>
+      <a href="features.html" class="text-sm font-medium text-slate-600 hover:text-accent transition-colors">Features</a>
+      <a href="configuration.html" class="text-sm font-medium text-slate-600 hover:text-accent transition-colors">Configuration</a>
+      <a href="integrations.html" class="text-sm font-medium text-slate-600 hover:text-accent transition-colors">Integrations</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ── Layout ───────────────────────────────────────────────────────────────── -->
+<div class="max-w-5xl mx-auto px-6 pt-28 pb-24 flex gap-12">
+
+  <!-- Sidebar -->
+  <aside class="hidden lg:block w-56 flex-shrink-0">
+    <div class="sticky top-24 space-y-1">
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">On this page</div>
+      <a href="#two-kinds" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Two kinds of memory</a>
+      <a href="#context-vars" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Context variables</a>
+      <a href="#wiki" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">The wiki (long-term memory)</a>
+      <a href="#turning-on" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Turning it on</a>
+      <a href="#files" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Where the files live</a>
+      <a href="#behaviour" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">What it does on its own</a>
+      <a href="#tools" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">The wiki tools</a>
+      <a href="#cost" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">What it costs</a>
+      <a href="#privacy" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Privacy &amp; portability</a>
+    </div>
+  </aside>
+
+  <!-- Content -->
+  <article class="flex-1 min-w-0">
+    <div class="mb-4">
+      <a href="index.html" class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-accent transition-colors">
+        <span class="material-symbols-outlined text-base">arrow_back</span> Docs
+      </a>
+    </div>
+    <h1 class="text-3xl md:text-4xl font-bold tracking-tight mb-3">Memory &amp; Context</h1>
+    <p class="text-lg text-slate-600 mb-10">Most assistants forget everything when the chat closes. LexiChat has two ways to carry things forward: <strong>context variables</strong> for the handful of facts that are always true about you, and a <strong>persistent wiki</strong> it writes to and reads back on its own. Both are plain files on your own disk.</p>
+
+    <!-- Two kinds -->
+    <section id="two-kinds" class="mb-12">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">compare_arrows</span> Two kinds of memory
+      </h2>
+      <p class="text-slate-600 mb-4">They solve different problems and are worth keeping separate.</p>
+      <div class="overflow-hidden bg-white border border-slate-200 rounded-xl mb-5">
+        <table class="w-full text-sm">
+          <thead><tr class="bg-slate-50 border-b border-slate-200">
+            <th class="text-left px-4 py-3 font-semibold text-slate-700"></th>
+            <th class="text-left px-4 py-3 font-semibold text-slate-700">Context variables</th>
+            <th class="text-left px-4 py-3 font-semibold text-slate-700">The wiki</th>
+          </tr></thead>
+          <tbody class="divide-y divide-slate-100">
+            <tr><td class="px-4 py-3 font-medium">Holds</td><td class="px-4 py-3 text-slate-600">A few short facts that rarely change</td><td class="px-4 py-3 text-slate-600">Anything worth keeping, and as much of it as you like</td></tr>
+            <tr><td class="px-4 py-3 font-medium">Who writes it</td><td class="px-4 py-3 text-slate-600">You, by hand</td><td class="px-4 py-3 text-slate-600">The AI, on its own — or you, in any editor</td></tr>
+            <tr><td class="px-4 py-3 font-medium">When it's read</td><td class="px-4 py-3 text-slate-600">Every message, automatically</td><td class="px-4 py-3 text-slate-600">When the AI decides it's relevant, by searching</td></tr>
+            <tr><td class="px-4 py-3 font-medium">Scope</td><td class="px-4 py-3 text-slate-600">Per profile</td><td class="px-4 py-3 text-slate-600">Shared by every profile that has it on</td></tr>
+            <tr><td class="px-4 py-3 font-medium">Costs context</td><td class="px-4 py-3 text-slate-600">A few tokens per fact</td><td class="px-4 py-3 text-slate-600">~560 tokens of instructions, plus whatever it reads</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="text-slate-600 text-sm">A rule of thumb: if you would put it on a business card, it's a context variable. If it's something you told the assistant once and expect it to remember, it belongs in the wiki.</p>
+    </section>
+
+    <!-- Context variables -->
+    <section id="context-vars" class="mb-12">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">badge</span> Context variables
+      </h2>
+      <p class="text-slate-600 mb-4">Name/value pairs attached to a profile, added to every conversation as facts about you. The AI uses them when they're relevant and stays quiet about them when they aren't — you don't have to keep saying where you live.</p>
+      <p class="text-slate-600 mb-4">Find them in <strong>Settings → Profiles</strong>, in the profile editor under <strong>Context Variables</strong>. Add a row, give it a name and a value, save the profile.</p>
+      <div class="overflow-hidden bg-white border border-slate-200 rounded-xl mb-5">
+        <table class="w-full text-sm">
+          <thead><tr class="bg-slate-50 border-b border-slate-200">
+            <th class="text-left px-4 py-3 font-semibold text-slate-700">Name</th>
+            <th class="text-left px-4 py-3 font-semibold text-slate-700">Value</th>
+            <th class="text-left px-4 py-3 font-semibold text-slate-700">What it saves you</th>
+          </tr></thead>
+          <tbody class="divide-y divide-slate-100">
+            <tr><td class="px-4 py-3 prose-code">location</td><td class="px-4 py-3 text-slate-600">Gravesend, Kent, UK</td><td class="px-4 py-3 text-slate-600">"What's the weather?" works without naming the town</td></tr>
+            <tr><td class="px-4 py-3 prose-code">timezone</td><td class="px-4 py-3 text-slate-600">Europe/London</td><td class="px-4 py-3 text-slate-600">Times in answers land in your day, not UTC</td></tr>
+            <tr><td class="px-4 py-3 prose-code">occupation</td><td class="px-4 py-3 text-slate-600">Software consultant</td><td class="px-4 py-3 text-slate-600">Explanations pitched at the right level</td></tr>
+            <tr><td class="px-4 py-3 prose-code">telegram_chat_id</td><td class="px-4 py-3 text-slate-600">764986304</td><td class="px-4 py-3 text-slate-600">"Send me a Telegram" needs no ID pasted in</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="bg-blue-50 border border-blue-100 rounded-xl p-4 text-sm text-slate-700">
+        Because they are <strong>per profile</strong>, a work profile and a personal profile can answer to different facts. They also travel with a profile when you export it — so review them before sharing a profile, the same as you would its credentials.
+      </div>
+    </section>
+
+    <!-- Wiki -->
+    <section id="wiki" class="mb-12">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">menu_book</span> The wiki — long-term memory
+      </h2>
+      <p class="text-slate-600 mb-4">The wiki is a folder of Markdown pages that outlives any single conversation. Tell LexiChat something worth keeping and it files the fact away without being asked; ask about it weeks later in a brand-new chat and it searches the wiki, reads the page back, and answers from it.</p>
+      <div class="grid sm:grid-cols-2 gap-3 mb-5">
+        <div class="bg-white border border-slate-200 rounded-xl p-4 text-sm text-slate-600 flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">group</span>People — who they are, what you last discussed</div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4 text-sm text-slate-600 flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">event</span>Dates — birthdays, anniversaries, deadlines</div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4 text-sm text-slate-600 flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">checklist</span>Lists — todos, projects, things in flight</div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4 text-sm text-slate-600 flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">tune</span>Preferences — how you like things done</div>
+      </div>
+    </section>
+
+    <!-- Turning on -->
+    <section id="turning-on" class="mb-12">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">toggle_on</span> Turning it on
+      </h2>
+      <p class="text-slate-600 mb-4">Memory is <strong>off until you enable it</strong>. There are two levels:</p>
+      <div class="grid sm:grid-cols-2 gap-4 mb-5">
+        <div class="bg-white border border-slate-200 rounded-xl p-4">
+          <div class="font-semibold text-sm mb-1">Global default</div>
+          <div class="text-sm text-slate-500">In <strong>Settings → Tools</strong>, listed as <strong>🧠 Persistent Wiki Memory</strong>. Sets the behaviour for every profile that hasn't chosen for itself.</div>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4">
+          <div class="font-semibold text-sm mb-1">Per-profile override</div>
+          <div class="text-sm text-slate-500">In the profile editor. A profile can switch memory on or off regardless of the global default; leave it unset to follow along.</div>
+        </div>
+      </div>
+      <div class="bg-blue-50 border border-blue-100 rounded-xl p-4 text-sm text-slate-700">
+        Useful split: memory on for a personal assistant profile, off for a research or scratch profile that would otherwise fill the wiki with one-off findings.
+      </div>
+      <div class="bg-amber-50 border border-amber-100 rounded-xl p-4 text-sm text-slate-700 mt-4">
+        <strong>Not to be confused with</strong> the <em>Memory</em> setting on the Defaults tab (Standard / Extended). That one sets the model's context window — 32K or 128K — and has nothing to do with the wiki.
+      </div>
+    </section>
+
+    <!-- Files -->
+    <section id="files" class="mb-12">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">folder_open</span> Where the files live
+      </h2>
+      <p class="text-slate-600 mb-4">Plain <span class="prose-code">.md</span> files in a folder you own — no database, no cloud, no sync:</p>
+      <div class="overflow-hidden bg-white border border-slate-200 rounded-xl mb-5">
+        <table class="w-full text-sm">
+          <tbody class="divide-y divide-slate-100">
+            <tr><td class="px-4 py-3 font-medium">macOS</td><td class="px-4 py-3 text-slate-600 prose-code">~/Library/Application Support/lexichat/wiki</td></tr>
+            <tr><td class="px-4 py-3 font-medium">Linux</td><td class="px-4 py-3 text-slate-600 prose-code">~/.local/share/lexichat/wiki</td></tr>
+            <tr><td class="px-4 py-3 font-medium">Windows</td><td class="px-4 py-3 text-slate-600 prose-code">%LOCALAPPDATA%\lexichat\wiki</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="text-slate-600 mb-4">Pages are organised into folders as the AI sees fit — <span class="prose-code">people/alice.md</span>, <span class="prose-code">events/birthdays.md</span>, <span class="prose-code">projects/</span>. Two files are special:</p>
+      <div class="grid sm:grid-cols-2 gap-4 mb-5">
+        <div class="bg-white border border-slate-200 rounded-xl p-4">
+          <div class="font-semibold text-sm mb-1 prose-code">index.md</div>
+          <div class="text-sm text-slate-500">A one-line entry per page. Read at the start of a conversation to get oriented, and kept current as pages are added.</div>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4">
+          <div class="font-semibold text-sm mb-1 prose-code">log.md</div>
+          <div class="text-sm text-slate-500">A dated line for every change, so you can see what was remembered and when — and undo it if it got something wrong.</div>
+        </div>
+      </div>
+      <div class="bg-slate-50 border border-slate-200 rounded-xl p-4 text-sm text-slate-600">
+        Edit any of it by hand. The AI reads whatever is there, so correcting a page in your editor corrects what it believes. Deleting a page makes it forget.
+      </div>
+    </section>
+
+    <!-- Behaviour -->
+    <section id="behaviour" class="mb-12">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">psychology</span> What it does on its own
+      </h2>
+      <p class="text-slate-600 mb-4">With memory on, LexiChat is told to do these without being prompted:</p>
+      <ul class="space-y-2 mb-5 text-sm text-slate-600">
+        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">search</span><span><strong>Search before answering</strong> anything about a date, plan, person, project or past conversation — rather than guessing from the current chat alone.</span></li>
+        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">save</span><span><strong>Store durable facts immediately</strong> — a name, a date, a preference, a goal — without waiting to be told to remember it.</span></li>
+        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">merge</span><span><strong>Update rather than duplicate</strong> — search first, then patch the existing page instead of creating a second one on the same subject.</span></li>
+        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">history_edu</span><span><strong>Log every change</strong> to <span class="prose-code">log.md</span> with the date and a one-line reason.</span></li>
+        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">cleaning_services</span><span><strong>Tidy up occasionally</strong> — a lint pass surfaces empty pages, missing index entries and broken links, which it then fixes.</span></li>
+      </ul>
+      <p class="text-slate-600 mb-3">You can also drive it directly: <em>"remember that my sister's birthday is 3 March"</em>, <em>"what do you know about the Hartley project?"</em>, or <em>"forget what I told you about the old address"</em>.</p>
+      <div class="bg-amber-50 border border-amber-100 rounded-xl p-4 text-sm text-slate-700">
+        <strong>It decides what's worth keeping.</strong> That is the point of it, but it does mean the wiki accumulates things you didn't explicitly ask it to save. <span class="prose-code">log.md</span> is the place to check, and every page is a file you can edit or delete.
+      </div>
+    </section>
+
+    <!-- Tools -->
+    <section id="tools" class="mb-12">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">build</span> The wiki tools
+      </h2>
+      <p class="text-slate-600 mb-4">Enabling memory adds eight tools. You rarely need to name them, but they show up in the trace when you're checking what happened:</p>
+      <div class="overflow-hidden bg-white border border-slate-200 rounded-xl mb-5">
+        <table class="w-full text-sm">
+          <thead><tr class="bg-slate-50 border-b border-slate-200">
+            <th class="text-left px-4 py-3 font-semibold text-slate-700">Tool</th>
+            <th class="text-left px-4 py-3 font-semibold text-slate-700">What it does</th>
+          </tr></thead>
+          <tbody class="divide-y divide-slate-100">
+            <tr><td class="px-4 py-3 prose-code">wiki_search</td><td class="px-4 py-3 text-slate-600">Find pages matching keywords. The usual first step.</td></tr>
+            <tr><td class="px-4 py-3 prose-code">wiki_read</td><td class="px-4 py-3 text-slate-600">Read a page back in full.</td></tr>
+            <tr><td class="px-4 py-3 prose-code">wiki_list</td><td class="px-4 py-3 text-slate-600">List every page in the wiki.</td></tr>
+            <tr><td class="px-4 py-3 prose-code">wiki_write</td><td class="px-4 py-3 text-slate-600">Create a page, or replace one outright.</td></tr>
+            <tr><td class="px-4 py-3 prose-code">wiki_patch</td><td class="px-4 py-3 text-slate-600">Change part of a page, leaving the rest alone.</td></tr>
+            <tr><td class="px-4 py-3 prose-code">wiki_append</td><td class="px-4 py-3 text-slate-600">Add to the end of a page — how <span class="prose-code">log.md</span> grows.</td></tr>
+            <tr><td class="px-4 py-3 prose-code">wiki_delete</td><td class="px-4 py-3 text-slate-600">Remove a page.</td></tr>
+            <tr><td class="px-4 py-3 prose-code">wiki_lint</td><td class="px-4 py-3 text-slate-600">Report empty pages, missing index entries and broken links.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="text-slate-500 text-sm">Every path is confined to the wiki folder — these tools cannot read or write anywhere else on your disk, regardless of what the model asks for.</p>
+    </section>
+
+    <!-- Cost -->
+    <section id="cost" class="mb-12">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">speed</span> What it costs
+      </h2>
+      <p class="text-slate-600 mb-4">Memory isn't free, which is why it's opt-in. With it on, every step of every conversation carries roughly <strong>560 tokens</strong> of memory instructions plus the eight tool definitions, before your question contributes anything — and the AI spends real time searching and reading pages.</p>
+      <p class="text-slate-600 mb-3">On a small local model with a tight context window that trade can hurt. Two ways to keep it in hand:</p>
+      <ul class="space-y-2 text-sm text-slate-600">
+        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">check_circle</span>Enable memory only on the profiles that benefit from it, rather than globally.</li>
+        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">check_circle</span>Prefer <a href="#context-vars" class="text-accent hover:underline">context variables</a> for the handful of facts that are always true — a few tokens each, and no searching.</li>
+      </ul>
+      <p class="text-slate-500 text-sm mt-4">The Debug panel breaks down exactly what each step is carrying, so you can see the cost rather than guess at it.</p>
+    </section>
+
+    <!-- Privacy -->
+    <section id="privacy" class="mb-12">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">lock</span> Privacy &amp; portability
+      </h2>
+      <p class="text-slate-600 mb-4">Everything here stays on your machine. The wiki is Markdown in a local folder; context variables live in the profile. With a local model, nothing you ask it to remember leaves the computer at all.</p>
+      <div class="grid sm:grid-cols-2 gap-3 mb-5">
+        <div class="bg-white border border-slate-200 rounded-xl p-4 text-sm text-slate-600 flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">backup</span>Back it up by copying the folder — it's just files</div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4 text-sm text-slate-600 flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">edit_note</span>Edit or correct any page in your usual editor</div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4 text-sm text-slate-600 flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">delete</span>Delete a page to forget it; delete the folder to forget everything</div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4 text-sm text-slate-600 flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">swap_horiz</span>Move it to another machine by copying it across</div>
+      </div>
+      <div class="bg-amber-50 border border-amber-100 rounded-xl p-4 text-sm text-slate-700">
+        <strong>One caveat if you use a hosted model.</strong> When the AI reads a wiki page to answer, that page's contents go to whichever model is answering — the same as anything else in the conversation. If a profile points at a remote endpoint, treat the wiki as things you're willing to send there. Local models keep it entirely on the machine.
+      </div>
+    </section>
+
+  </article>
+</div>
+
+<!-- ── Footer ──────────────────────────────────────────────────────────────── -->
+<footer class="border-t border-slate-200 py-10 px-6">
+  <div class="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+    <div class="flex items-center gap-2">
+      <img src="../resources/lexi1.png" alt="LexiChat" class="w-6 h-6 rounded-lg"/>
+      <span class="text-sm font-semibold">LexiChat</span>
+      <span class="text-sm text-slate-400">— Free</span>
+    </div>
+    <div class="flex items-center gap-6">
+      <a href="../index.html" class="text-sm text-slate-500 hover:text-accent transition-colors">Home</a>
+      <a href="index.html" class="text-sm text-slate-500 hover:text-accent transition-colors">Docs</a>
+      <a href="features.html" class="text-sm text-slate-500 hover:text-accent transition-colors">Features</a>
+      <a href="mailto:info@lexi-chat.com" class="text-sm text-slate-500 hover:text-accent transition-colors">Contact</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
