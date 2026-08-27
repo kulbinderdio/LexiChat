@@ -1061,7 +1061,7 @@ export function McpAppFrame({ ui, toolName, onSend }: { ui: ToolUi; toolName: st
             post({ jsonrpc: "2.0", id, result: {
               protocolVersion: "2026-01-26",
               hostCapabilities: {},
-              hostInfo: { name: "LexiChat", version: "2.4.14" },
+              hostInfo: { name: "LexiChat", version: "2.4.15" },
               hostContext: {
                 toolInfo: {
                   id: "1",
@@ -3062,7 +3062,7 @@ export default function App() {
               Runs entirely on-device via Ollama. Reads files, searches the web,
               calls APIs, and keeps your data private.
             </p>
-            <div className="about-version">Version 2.4.14</div>
+            <div className="about-version">Version 2.4.15</div>
 
             <div className="about-support">
               <div className="about-support-label">Support the project</div>
