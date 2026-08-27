@@ -6,6 +6,8 @@ import { save } from "@tauri-apps/plugin-dialog";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ScheduledJob, JobRun, JobSchedule, TraceStep, JobStep } from "./jobTypes";
+import { dayKey, keyToDate, prevOccurrence, expectedDays, cellState,
+         type CellState } from "./runCalendar";
 
 // Backend response shapes for tool discovery
 interface SpecInfoLocal {
@@ -160,6 +162,7 @@ function blankJob(profile: Profile | null = null): ScheduledJob {
     profile_name: profile?.name ?? null,
     profile_context: null,
     steps: [],
+    catch_up: true,
   };
 }
 
@@ -175,23 +178,26 @@ function nextRunLabel(job: ScheduledJob): string {
   }
   if (s.type === "Daily" || s.type === "Weekly") {
     const h = pad(s.hour ?? 0), m = pad(s.minute ?? 0);
+    const prev = prevOccurrence(s, now);
+    // Mirrors is_due in jobs.rs: outstanding when nothing has run since the last slot.
+    const baseline = new Date(job.last_run_at ?? job.created_at);
+    if (prev && baseline < prev) {
+      if (job.catch_up === false) {
+        return now.getTime() - prev.getTime() < 2 * 60_000 ? "Running soon…" : "Missed";
+      }
+      return "Due now";
+    }
+    const next = prev ? new Date(prev) : now;
+    next.setDate(next.getDate() + (s.type === "Weekly" ? 7 : 1));
     if (s.type === "Weekly") {
       const days = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
       return `Next: ${days[s.weekday ?? 0]} ${h}:${m}`;
     }
-    const target = new Date(); target.setHours(s.hour ?? 0, s.minute ?? 0, 0, 0);
-    if (job.last_run_at && new Date(job.last_run_at).toDateString() === now.toDateString()) {
-      target.setDate(target.getDate() + 1);
-    } else if (target < now) {
-      // Due today but past — will run at next tick if within the minute window, else tomorrow
-      const diff = now.getTime() - target.getTime();
-      if (diff < 60_000) return "Running soon…";
-      target.setDate(target.getDate() + 1);
-    }
-    return `Next: ${target.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })} ${h}:${m}`;
+    return `Next: ${next.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })} ${h}:${m}`;
   }
   return "";
 }
+
 
 function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
@@ -382,6 +388,7 @@ export function JobsPanel({ models, profiles, activeProfileId, globalOpenapiSpec
         {tab === "history" && (
           <HistoryTab
             runs={filteredRuns}
+            allRuns={runs}
             jobs={jobs}
             filterJobId={filterJobId}
             onFilterChange={setFilterJobId}
@@ -1005,6 +1012,15 @@ function JobForm({ job: initial, models, profiles, globalOpenapiSpecs, globalMcp
               value={job.schedule.hours ?? 4} onChange={e => setSched({ hours: Number(e.target.value) })} />
             <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>hours</span>
           </>}
+          {(job.schedule.type === "Daily" || job.schedule.type === "Weekly") && (
+            <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, cursor: "pointer",
+                            color: "var(--text-secondary)" }}
+              title="If the machine was asleep or busy at the scheduled time, run as soon as it wakes. Only ever one catch-up run, however long it was off.">
+              <input type="checkbox" checked={job.catch_up !== false}
+                onChange={e => set({ catch_up: e.target.checked })} />
+              Run if missed
+            </label>
+          )}
         </div>
       </div>
 
@@ -1166,8 +1182,9 @@ function JobForm({ job: initial, models, profiles, globalOpenapiSpecs, globalMcp
 
 // ── History tab ───────────────────────────────────────────────────────────────
 
-function HistoryTab({ runs, jobs, filterJobId, onFilterChange, onClear }: {
+function HistoryTab({ runs, allRuns, jobs, filterJobId, onFilterChange, onClear }: {
   runs: JobRun[];
+  allRuns: JobRun[];
   jobs: ScheduledJob[];
   filterJobId: string | null;
   onFilterChange: (id: string | null) => void;
@@ -1187,14 +1204,253 @@ function HistoryTab({ runs, jobs, filterJobId, onFilterChange, onClear }: {
         </button>
       </div>
 
-      {/* Runs list */}
+      {/* Run calendar + runs list */}
       <div style={{ flex: 1, overflowY: "auto" }}>
+        {allRuns.length > 0 && (
+          <RunCalendar jobs={jobs} runs={allRuns} onPickJob={onFilterChange} />
+        )}
         {runs.length === 0 && (
           <div className="admin-empty">No run history yet. Run a job to see results here.</div>
         )}
         {runs.map(run => <RunRow key={run.id} run={run} />)}
       </div>
     </div>
+  );
+}
+
+
+// ── Run calendar ──────────────────────────────────────────────────────────────
+// A job × day matrix for the last GRID_DAYS days. Unlike a GitHub contribution
+// graph — which ramps colour by COUNT — the useful signal for scheduled jobs is
+// the OUTCOME, and above all a slot that was expected and produced nothing. Rows
+// are jobs so a silent job is attributable at a glance rather than averaged away.
+
+const GRID_DAYS = 84;   // 12 weeks — matches what run retention can honestly cover
+const CELL = 11;        // px
+const GAP  = 2;         // px
+const PITCH = CELL + GAP;
+
+function RunCalendar({ jobs, runs, onPickJob }: {
+  jobs: ScheduledJob[];
+  runs: JobRun[];
+  onPickJob: (id: string | null) => void;
+}) {
+  const [sel, setSel] = useState<{ jobId: string; day: string; x: number; y: number } | null>(null);
+
+  const now = new Date();
+  const days: string[] = [];
+  {
+    const d = new Date(now);
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - (GRID_DAYS - 1));
+    for (let i = 0; i < GRID_DAYS; i++) {
+      days.push(dayKey(d));
+      d.setDate(d.getDate() + 1);
+    }
+  }
+  const from = keyToDate(days[0]);
+  const to   = keyToDate(days[days.length - 1]);
+
+  // job → day → runs
+  const byJobDay = new Map<string, Map<string, JobRun[]>>();
+  const countByJob = new Map<string, number>();
+  for (const r of runs) {
+    countByJob.set(r.job_id, (countByJob.get(r.job_id) ?? 0) + 1);
+    const k = dayKey(new Date(r.started_at));
+    let m = byJobDay.get(r.job_id);
+    if (!m) { m = new Map(); byJobDay.set(r.job_id, m); }
+    const list = m.get(k);
+    if (list) list.push(r); else m.set(k, [r]);
+  }
+
+  // Only jobs that either still exist or have runs in the window are worth a row.
+  const rows = jobs.filter(j => (byJobDay.get(j.id)?.size ?? 0) > 0 || j.enabled);
+  if (rows.length === 0) return null;
+
+  const stateOf = (job: ScheduledJob, day: string, expected: Set<string> | null): CellState =>
+    cellState({
+      day,
+      dayRuns: byJobDay.get(job.id)?.get(day) ?? [],
+      totalRunsForJob: countByJob.get(job.id) ?? 0,
+      oldestRetainedDay: [...(byJobDay.get(job.id)?.keys() ?? [])].sort()[0],
+      expected,
+    });
+
+  const cellStyle = (st: CellState): React.CSSProperties => {
+    const base: React.CSSProperties = {
+      width: CELL, height: CELL, borderRadius: 2, boxSizing: "border-box",
+      padding: 0, border: "none", cursor: st === "idle" ? "default" : "pointer",
+    };
+    if (st === "ran")     return { ...base, background: "#22c55e" };
+    if (st === "failed")  return { ...base, background: "#f87171" };
+    if (st === "missed")  return { ...base, background: "transparent", border: "1.5px solid #f59e0b" };
+    if (st === "unknown") return { ...base, background: "transparent", border: "1px dotted var(--border)" };
+    return { ...base, background: "var(--border-light)" };
+  };
+
+  // Month label at each column whose day is the 1st (or the very first column).
+  const monthLabels = days.map((k, i) => {
+    const d = keyToDate(k);
+    if (i !== 0 && d.getDate() !== 1) return null;
+    return { i, text: d.toLocaleDateString([], { month: "short" }) };
+  }).filter(Boolean) as { i: number; text: string }[];
+
+  const selRuns = sel ? (byJobDay.get(sel.jobId)?.get(sel.day) ?? []) : [];
+  const selJob  = sel ? rows.find(j => j.id === sel.jobId) ?? null : null;
+
+  return (
+    <div style={{ padding: "10px 16px 4px", borderBottom: "1px solid var(--border-light)" }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 6 }}>
+        <span style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase",
+                       letterSpacing: "0.04em", color: "var(--text-secondary)" }}>
+          Last 12 weeks
+        </span>
+        <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+          {runs.length} run{runs.length === 1 ? "" : "s"}
+        </span>
+      </div>
+
+      <div style={{ overflowX: "auto", paddingBottom: 4 }}>
+        <div style={{ display: "inline-block", minWidth: "min-content" }}>
+          {/* Month ruler */}
+          <div style={{ display: "flex", marginLeft: 148, height: 14, position: "relative" }}>
+            {monthLabels.map(m => (
+              <span key={m.i} style={{ position: "absolute", left: m.i * PITCH, fontSize: 10,
+                                       color: "var(--text-tertiary)", whiteSpace: "nowrap" }}>
+                {m.text}
+              </span>
+            ))}
+          </div>
+
+          {rows.map(job => {
+            const expected = expectedDays(job, from, to, now);
+            // A row with no expectations can never show a missed cell. Say why, so an
+            // all-blank row reads as "nothing was due" rather than "this is broken".
+            const why = !job.enabled ? "off"
+              : job.schedule.type === "Manual"   ? "manual"
+              : job.schedule.type === "Interval" ? "interval"
+              : null;
+            return (
+              <div key={job.id} style={{ display: "flex", alignItems: "center", marginBottom: GAP,
+                                         opacity: job.enabled ? 1 : 0.55 }}>
+                <button
+                  onClick={() => onPickJob(job.id)}
+                  title={`${job.name} — ${scheduleLabel(job.schedule)}${
+                    why ? `. No missed-run tracking for ${why === "off" ? "a disabled job" : `${why} schedules`}` : ""
+                  }. Click to filter the list below.`}
+                  style={{ width: 140, marginRight: 8, display: "flex", justifyContent: "flex-end",
+                           alignItems: "baseline", gap: 4, background: "none", border: "none",
+                           padding: 0, cursor: "pointer", fontSize: 11, color: "var(--text-secondary)",
+                           whiteSpace: "nowrap", overflow: "hidden" }}>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {job.name || "(unnamed)"}
+                  </span>
+                  {why && (
+                    <span style={{ fontSize: 9, color: "var(--text-tertiary)", border: "1px solid var(--border)",
+                                   borderRadius: 3, padding: "0 3px", flexShrink: 0 }}>
+                      {why}
+                    </span>
+                  )}
+                </button>
+                <div style={{ display: "flex", gap: GAP }}>
+                  {days.map(day => {
+                    const st = stateOf(job, day, expected);
+                    const list = byJobDay.get(job.id)?.get(day) ?? [];
+                    const label = keyToDate(day).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+                    const title =
+                      st === "missed"  ? `${label} — expected at ${pad(job.schedule.hour ?? 0)}:${pad(job.schedule.minute ?? 0)}, no run recorded`
+                      : st === "unknown" ? `${label} — beyond retained history`
+                      : list.length     ? `${label} — ${list.length} run${list.length === 1 ? "" : "s"}, ${list.some(r => r.status === "Error") ? "had a failure" : "all succeeded"}`
+                      : `${label} — not scheduled`;
+                    return (
+                      <button key={day} title={title} style={cellStyle(st)}
+                        onClick={e => {
+                          if (st === "idle") return;
+                          const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                          setSel({ jobId: job.id, day, x: r.left, y: r.bottom + 6 });
+                        }} />
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 6, fontSize: 10,
+                    color: "var(--text-tertiary)", flexWrap: "wrap" }}>
+        <Legend swatch={cellStyle("ran")}     text="ran" />
+        <Legend swatch={cellStyle("failed")}  text="failed" />
+        <Legend swatch={cellStyle("missed")}  text="expected, no run" />
+        <Legend swatch={cellStyle("idle")}    text="not scheduled" />
+        <Legend swatch={cellStyle("unknown")} text="beyond history" />
+      </div>
+
+      {sel && (
+        <>
+          {/* click-away */}
+          <div onClick={() => setSel(null)}
+               style={{ position: "fixed", inset: 0, zIndex: 200 }} />
+          {/* --surface is the app's opaque popover background (see .save-menu-dropdown);
+              anything translucent here lets the run list read through the panel. */}
+          <div style={{ position: "fixed", left: Math.min(sel.x, window.innerWidth - 320), top: sel.y,
+                        zIndex: 201, width: 300, maxHeight: 300, overflowY: "auto",
+                        background: "var(--surface)", color: "var(--text)",
+                        border: "1px solid var(--border)", borderRadius: 8,
+                        boxShadow: "0 8px 32px rgba(0,0,0,0.45)", padding: "10px 12px" }}>
+            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 2 }}>
+              {keyToDate(sel.day).toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" })}
+            </div>
+            <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginBottom: 6 }}>
+              {selJob?.name}
+            </div>
+            {selRuns.length === 0 && selJob && (
+              <div style={{ fontSize: 11, color: "#f59e0b" }}>
+                No run recorded. Expected at {pad(selJob.schedule.hour ?? 0)}:{pad(selJob.schedule.minute ?? 0)}
+                {selJob.catch_up === false && " (catch-up off — a missed slot is skipped)"}.
+              </div>
+            )}
+            {selRuns
+              .slice()
+              .sort((a, b) => a.started_at.localeCompare(b.started_at))
+              .map(r => (
+              <div key={r.id} style={{ display: "flex", gap: 6, alignItems: "baseline", padding: "3px 0",
+                                       borderTop: "1px solid var(--border-light)" }}>
+                <span style={{ width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
+                               background: r.status === "Error" ? "#f87171" : "#22c55e" }} />
+                <span style={{ fontSize: 11, fontFamily: "monospace" }}>
+                  {new Date(r.started_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </span>
+                <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+                  {(r.duration_ms / 1000).toFixed(1)}s
+                </span>
+                <span style={{ fontSize: 10, color: "var(--text-secondary)", overflow: "hidden",
+                               textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {r.error ? r.error.slice(0, 60) : r.output.slice(0, 60)}
+                </span>
+              </div>
+            ))}
+            {selRuns.length > 0 && (
+              <button className="btn" style={{ fontSize: 10, padding: "2px 6px", marginTop: 6 }}
+                onClick={() => { onPickJob(sel.jobId); setSel(null); }}>
+                Show in list
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function Legend({ swatch, text }: { swatch: React.CSSProperties; text: string }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+      <span style={{ ...swatch, cursor: "default", display: "inline-block" }} />
+      {text}
+    </span>
   );
 }
 

@@ -58,6 +58,8 @@ export interface ScheduledJob {
   profile_name: string | null;
   profile_context: JobProfileContext | null;
   steps?: JobStep[];
+  /** Run a Daily/Weekly slot missed while the machine was asleep. Defaults to true. */
+  catch_up?: boolean;
 }
 
 export interface TraceToolCall {

@@ -230,6 +230,7 @@ fn assemble(spec: DraftSpec, args: &DraftJobArgs) -> Result<DraftedJob, String> 
         profile_name: args.profile_name.clone(),
         profile_context: None,
         steps,
+        catch_up: true,
     };
 
     Ok(DraftedJob { job, warnings })

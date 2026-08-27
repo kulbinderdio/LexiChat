@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Timelike, Utc};
+use chrono::{DateTime, Datelike, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tauri::Manager;
@@ -49,7 +49,15 @@ pub struct ScheduledJob {
     pub profile_context: Option<JobProfileContext>,
     #[serde(default)]
     pub steps: Vec<JobStep>,
+    /// Run a Daily/Weekly slot that was missed because the machine was asleep or busy,
+    /// as soon as it wakes. Defaults to true, so jobs saved before this existed are
+    /// fixed on load. Turn it off for jobs that are only useful on time (a morning
+    /// briefing delivered at 6pm is noise).
+    #[serde(default = "default_catch_up")]
+    pub catch_up: bool,
 }
+
+fn default_catch_up() -> bool { true }
 
 /// NOTE: serialised into scheduled_jobs.json — may contain API keys/tokens from the
 /// profile's auth configs. Acceptable for a single-user desktop app (same as localStorage).
@@ -240,9 +248,68 @@ pub fn append_run(run: JobRun) -> anyhow::Result<()> {
 
 // ── Schedule due-time check ────────────────────────────────────────────────────
 
+/// How late a job with catch-up disabled may still start. Replaces the old exact
+/// minute-equality test, which a tick delayed by load could miss even while awake.
+const NO_CATCHUP_GRACE_MINS: i64 = 2;
+
+/// Gap between catch-up runs that come due in the same tick, so a lid opened after a
+/// weekend doesn't start every stale job against the model server simultaneously.
+const STAGGER_SECS: u64 = 30;
+
+type InFlight = std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>;
+
+/// Releases a job's in-flight claim on drop, so a run that panics doesn't leave the
+/// job permanently claimed — which would silently stop it running until restart.
+struct InFlightGuard {
+    set: InFlight,
+    id:  String,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        if let Ok(mut set) = self.set.lock() {
+            set.remove(&self.id);
+        }
+    }
+}
+
+/// The most recent instant this schedule should have fired, at or before `now`.
+/// `None` for schedules with no wall-clock slot (Interval, Manual).
+///
+/// Only ever returns the LATEST slot, which is what keeps catch-up from stampeding:
+/// a machine that was off for a week comes back to one outstanding run, not seven.
+fn prev_occurrence(
+    schedule: &JobSchedule,
+    now: DateTime<chrono::Local>,
+) -> Option<NaiveDateTime> {
+    match schedule {
+        JobSchedule::Daily { hour, minute } => {
+            let today = now.date_naive().and_hms_opt(*hour, *minute, 0)?;
+            Some(if today <= now.naive_local() {
+                today
+            } else {
+                today - chrono::Duration::days(1)
+            })
+        }
+        JobSchedule::Weekly { weekday, hour, minute } => {
+            let back = (now.weekday().num_days_from_monday() as i64 - *weekday as i64).rem_euclid(7);
+            let cand = (now.date_naive() - chrono::Duration::days(back))
+                .and_hms_opt(*hour, *minute, 0)?;
+            Some(if cand <= now.naive_local() {
+                cand
+            } else {
+                cand - chrono::Duration::days(7)
+            })
+        }
+        _ => None,
+    }
+}
+
 pub fn is_due(
     schedule: &JobSchedule,
     last_run: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+    catch_up: bool,
     now: DateTime<Utc>,
 ) -> bool {
     match schedule {
@@ -253,23 +320,24 @@ pub fn is_due(
             Some(lr) => now.signed_duration_since(lr).num_hours() >= *hours as i64,
         },
 
-        JobSchedule::Daily { hour, minute } => {
+        // Daily/Weekly fire on a wall-clock slot. Testing for the exact minute meant a
+        // machine asleep at 07:00 never observed minute 07:00 at all and silently skipped
+        // to the next day. Compare against the most recent slot instead: if it has passed
+        // and we have not run since, the job is outstanding and runs on wake.
+        JobSchedule::Daily { .. } | JobSchedule::Weekly { .. } => {
             let local = now.with_timezone(&chrono::Local);
-            let already_ran = last_run.map(|lr| {
-                lr.with_timezone(&chrono::Local).date_naive() == local.date_naive()
-            }).unwrap_or(false);
-            !already_ran && local.hour() == *hour && local.minute() == *minute
-        }
-
-        JobSchedule::Weekly { weekday, hour, minute } => {
-            let local = now.with_timezone(&chrono::Local);
-            let already_ran = last_run.map(|lr| {
-                lr.with_timezone(&chrono::Local).date_naive() == local.date_naive()
-            }).unwrap_or(false);
-            !already_ran
-                && local.weekday().num_days_from_monday() == *weekday
-                && local.hour() == *hour
-                && local.minute() == *minute
+            let Some(prev) = prev_occurrence(schedule, local) else { return false };
+            // Fall back to creation time so a job added at 3pm with a 07:00 slot does not
+            // immediately count this morning's slot as missed.
+            let baseline = last_run.unwrap_or(created_at)
+                .with_timezone(&chrono::Local)
+                .naive_local();
+            if baseline >= prev {
+                return false;
+            }
+            catch_up
+                || local.naive_local().signed_duration_since(prev).num_minutes()
+                    < NO_CATCHUP_GRACE_MINS
         }
     }
 }
@@ -508,6 +576,11 @@ pub fn spawn_scheduler(app: tauri::AppHandle) {
             tokio::time::interval(std::time::Duration::from_secs(30));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+        // Jobs currently executing. `last_run_at` is only written once a run finishes,
+        // and a catch-up slot stays due until then, so without this guard any job that
+        // outlives one tick would be started again every 30s.
+        let in_flight: InFlight = Default::default();
+
         loop {
             interval.tick().await;
             let now = Utc::now();
@@ -517,13 +590,28 @@ pub fn spawn_scheduler(app: tauri::AppHandle) {
             let jobs: Vec<ScheduledJob> = state.jobs.lock().unwrap().clone();
             drop(state);
 
+            let mut spawned = 0u64;
             for job in jobs.iter().filter(|j| j.enabled) {
-                if !is_due(&job.schedule, job.last_run_at, now) {
+                if !is_due(&job.schedule, job.last_run_at, job.created_at, job.catch_up, now) {
                     continue;
                 }
+                // Claim it for this run, or leave it alone if the last one is still going.
+                if !in_flight.lock().unwrap().insert(job.id.clone()) {
+                    continue;
+                }
+                // Waking from sleep can leave several catch-up jobs outstanding at once;
+                // stagger them so they don't all hit the model server together.
+                let delay = std::time::Duration::from_secs(STAGGER_SECS * spawned);
+                spawned += 1;
+
                 let job = job.clone();
                 let app = app.clone();
+                let in_flight = in_flight.clone();
                 tauri::async_runtime::spawn(async move {
+                    let _claim = InFlightGuard { set: in_flight, id: job.id.clone() };
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
                     let state: tauri::State<crate::AppState> = app.state();
                     let (started_at, output, trace, error) = execute_job(&job, &state, &app).await;
                     let finished_at = Utc::now();
@@ -571,27 +659,39 @@ mod tests {
     use super::*;
     use chrono::{Duration, Local, Datelike, Timelike};
 
+    /// Most cases don't care about the creation-time guard, so default it to the
+    /// distant past and leave catch-up on.
+    fn due(sched: &JobSchedule, last_run: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+        is_due(sched, last_run, now - Duration::days(60), true, now)
+    }
+
+    /// A Daily schedule whose slot sits `mins` minutes before `now`, in local time.
+    fn daily_slot_mins_ago(now: DateTime<Utc>, mins: i64) -> JobSchedule {
+        let slot = now.with_timezone(&Local) - Duration::minutes(mins);
+        JobSchedule::Daily { hour: slot.hour(), minute: slot.minute() }
+    }
+
     #[test]
     fn manual_is_never_due() {
-        assert!(!is_due(&JobSchedule::Manual, None, Utc::now()));
-        assert!(!is_due(&JobSchedule::Manual, Some(Utc::now()), Utc::now()));
+        assert!(!due(&JobSchedule::Manual, None, Utc::now()));
+        assert!(!due(&JobSchedule::Manual, Some(Utc::now()), Utc::now()));
     }
 
     #[test]
     fn interval_due_when_never_run() {
-        assert!(is_due(&JobSchedule::Interval { hours: 6 }, None, Utc::now()));
+        assert!(due(&JobSchedule::Interval { hours: 6 }, None, Utc::now()));
     }
 
     #[test]
     fn interval_due_after_enough_time() {
         let now = Utc::now();
-        assert!(is_due(&JobSchedule::Interval { hours: 6 }, Some(now - Duration::hours(7)), now));
+        assert!(due(&JobSchedule::Interval { hours: 6 }, Some(now - Duration::hours(7)), now));
     }
 
     #[test]
     fn interval_not_due_too_soon() {
         let now = Utc::now();
-        assert!(!is_due(&JobSchedule::Interval { hours: 6 }, Some(now - Duration::minutes(30)), now));
+        assert!(!due(&JobSchedule::Interval { hours: 6 }, Some(now - Duration::minutes(30)), now));
     }
 
     // Daily/Weekly compare against local wall-clock; derive the schedule from `now`
@@ -601,17 +701,64 @@ mod tests {
         let now = Utc::now();
         let local = now.with_timezone(&Local);
         let sched = JobSchedule::Daily { hour: local.hour(), minute: local.minute() };
-        assert!(is_due(&sched, None, now), "should be due at the matching minute");
-        assert!(!is_due(&sched, Some(now), now), "should not re-run after running today");
+        assert!(due(&sched, None, now), "should be due at the matching minute");
+        assert!(!due(&sched, Some(now), now), "should not re-run after running today");
+    }
+
+    /// The bug this catch-up work exists for: asleep at 07:00, opened at 07:30.
+    #[test]
+    fn daily_catches_up_on_a_slot_missed_while_asleep() {
+        let now = Utc::now();
+        let sched = daily_slot_mins_ago(now, 30);
+        assert!(due(&sched, Some(now - Duration::hours(24)), now),
+                "a slot that passed 30 minutes ago should still run");
     }
 
     #[test]
-    fn daily_not_due_at_other_minute() {
+    fn daily_not_due_again_once_that_slot_has_run() {
         let now = Utc::now();
-        let local = now.with_timezone(&Local);
-        let other = (local.minute() + 1) % 60;
-        let sched = JobSchedule::Daily { hour: local.hour(), minute: other };
-        assert!(!is_due(&sched, None, now));
+        let sched = daily_slot_mins_ago(now, 30);
+        assert!(!due(&sched, Some(now - Duration::minutes(10)), now),
+                "already ran after this slot");
+    }
+
+    #[test]
+    fn daily_not_due_when_the_next_slot_is_still_ahead() {
+        let now = Utc::now();
+        let slot = now.with_timezone(&Local) + Duration::hours(1);
+        let sched = JobSchedule::Daily { hour: slot.hour(), minute: slot.minute() };
+        assert!(!due(&sched, Some(now - Duration::minutes(5)), now));
+    }
+
+    /// A job created at 3pm with a 07:00 slot must not treat this morning as missed.
+    #[test]
+    fn daily_created_after_todays_slot_does_not_fire_immediately() {
+        let now = Utc::now();
+        let sched = daily_slot_mins_ago(now, 30);
+        assert!(!is_due(&sched, None, now - Duration::minutes(10), true, now));
+    }
+
+    /// Three weeks away yields ONE outstanding run, not one per missed day.
+    #[test]
+    fn long_absence_produces_a_single_catch_up_run() {
+        let now = Utc::now();
+        let created = now - Duration::days(60);
+        let sched = daily_slot_mins_ago(now, 30);
+        assert!(is_due(&sched, Some(now - Duration::days(21)), created, true, now));
+        // ...and once that run lands, nothing further is outstanding.
+        assert!(!is_due(&sched, Some(now), created, true, now));
+    }
+
+    #[test]
+    fn catch_up_disabled_skips_a_missed_slot_but_still_runs_on_time() {
+        let now = Utc::now();
+        let created = now - Duration::days(60);
+        let missed = daily_slot_mins_ago(now, 30);
+        assert!(!is_due(&missed, Some(now - Duration::hours(24)), created, false, now),
+                "30 minutes late is outside the grace window");
+        let fresh = daily_slot_mins_ago(now, 0);
+        assert!(is_due(&fresh, Some(now - Duration::hours(24)), created, false, now),
+                "the current slot is still within the grace window");
     }
 
     #[test]
@@ -623,8 +770,21 @@ mod tests {
             hour: local.hour(),
             minute: local.minute(),
         };
-        assert!(is_due(&sched, None, now));
-        assert!(!is_due(&sched, Some(now), now));
+        assert!(due(&sched, None, now));
+        assert!(!due(&sched, Some(now), now));
+    }
+
+    /// A missed Monday runs on Wednesday rather than waiting a further week.
+    #[test]
+    fn weekly_catches_up_later_in_the_week() {
+        let now = Utc::now();
+        let slot = now.with_timezone(&Local) - Duration::hours(25);
+        let sched = JobSchedule::Weekly {
+            weekday: slot.weekday().num_days_from_monday(),
+            hour: slot.hour(),
+            minute: slot.minute(),
+        };
+        assert!(due(&sched, Some(now - Duration::days(8)), now));
     }
 
     #[test]
