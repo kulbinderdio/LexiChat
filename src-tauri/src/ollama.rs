@@ -2274,17 +2274,21 @@ async fn dispatch_tool<R: tauri::Runtime>(
         // resolve it by basename against the staged attachment paths to get the actual file.
         let source_ref = args.get("source_image").and_then(|p| p.as_str())
             .map(str::trim).filter(|s| !s.is_empty());
+        // Restored conversations carry paths, not bytes, so a match in `sandbox_paths` is not
+        // proof the file is still there — require it to exist, or the read fails later with a
+        // far less obvious error.
         let source_real: Option<String> = source_ref.and_then(|r| {
             let want = std::path::Path::new(r).file_name().and_then(|n| n.to_str())?.to_string();
             sandbox_paths.iter().find(|p|
                 std::path::Path::new(p.as_str()).file_name().and_then(|n| n.to_str()) == Some(want.as_str())
+                    && std::path::Path::new(p.as_str()).is_file()
             ).cloned()
         });
         if source_ref.is_some() && source_real.is_none() {
             return format!("Error: generate_image could not find an attached image matching \
-                source_image=\"{}\". Only images the user attached to THIS message can be edited — \
-                pass the exact /work/uploads/<filename> path shown for the attachment (or omit \
-                source_image to generate a brand-new image from the prompt).", source_ref.unwrap());
+                source_image=\"{}\". Images the user attached anywhere in this conversation can be \
+                edited — pass the exact /work/uploads/<filename> path shown for the attachment (or \
+                omit source_image to generate a brand-new image from the prompt).", source_ref.unwrap());
         }
         let editing = source_real.is_some();
         // Optional inpaint mask: prefer a mask the USER brushed onto this attachment (stored in

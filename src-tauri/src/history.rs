@@ -36,6 +36,12 @@ pub struct Conversation {
     /// Opaque frontend `ChatMessage[]` used only for rendering.
     #[serde(default)]
     pub display: serde_json::Value,
+    /// Absolute paths of files the user attached during this chat. Persisted so a reopened
+    /// conversation can still edit the photo it was about, rather than reporting it as no
+    /// longer attached. Only paths are stored, never the bytes — the files live wherever the
+    /// user keeps them, so one may have moved or been deleted by the time the chat is reopened.
+    #[serde(default)]
+    pub attachments: Vec<String>,
 }
 
 fn conversations_dir() -> std::path::PathBuf {
@@ -124,6 +130,13 @@ pub fn rename(id: &str, title: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Split saved attachment paths into those still on disk and those that have gone.
+/// A path is only useful if the file is still there, and a vanished one is worth naming:
+/// the model can then say the file has moved instead of silently reinventing it.
+pub fn split_attachments(paths: &[String]) -> (Vec<String>, Vec<String>) {
+    paths.iter().cloned().partition(|p| std::path::Path::new(p).is_file())
+}
+
 /// Title = first line of the first user message, trimmed to ~40 chars.
 pub fn derive_title(wire: &[WireMessage]) -> String {
     let raw = wire
@@ -168,5 +181,26 @@ mod tests {
     #[test]
     fn disk_size_handles_a_missing_files_dir() {
         assert_eq!(disk_size("conv-does-not-exist-at-all"), 0);
+    }
+
+    /// Attachments are paths, not bytes, so a file can vanish between saving a chat and
+    /// reopening it. The split is what lets the reopened chat use what survives and name
+    /// what didn't, instead of handing the model a path that fails on read.
+    #[test]
+    fn split_attachments_separates_present_from_vanished() {
+        let here = std::env::current_exe().unwrap().to_string_lossy().to_string();
+        let gone = "/definitely/not/a/real/path/photo.jpg".to_string();
+        let (present, missing) = split_attachments(&[here.clone(), gone.clone()]);
+        assert_eq!(present, vec![here]);
+        assert_eq!(missing, vec![gone]);
+    }
+
+    /// A conversation saved before attachments were tracked must still load.
+    #[test]
+    fn conversation_without_attachments_field_still_deserialises() {
+        let json = r#"{"id":"c1","title":"t","model":"m","created_at":1,"updated_at":2,
+                       "message_count":0,"wire":[],"display":[]}"#;
+        let conv: Conversation = serde_json::from_str(json).unwrap();
+        assert!(conv.attachments.is_empty());
     }
 }

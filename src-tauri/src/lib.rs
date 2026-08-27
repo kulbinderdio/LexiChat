@@ -271,6 +271,9 @@ pub struct SaveConversationArgs {
     pub model: String,
     #[serde(default)]
     pub message_count: usize,
+    /// Files attached during this chat, so a reopened conversation can still edit them.
+    #[serde(default)]
+    pub attachments: Vec<String>,
 }
 
 /// Persist the current chat, creating a record on first save and updating it
@@ -307,7 +310,9 @@ fn save_active_conversation(
         updated_at: now,
         message_count: args.message_count,
     };
-    let conv = history::Conversation { meta: meta.clone(), wire, display: args.display };
+    let conv = history::Conversation {
+        meta: meta.clone(), wire, display: args.display, attachments: args.attachments,
+    };
     history::save_one(&conv).map_err(|e| e.to_string())?;
     *active = Some(id);
     Ok(meta)
@@ -354,15 +359,26 @@ pub struct ConversationIdArgs {
 
 /// Load a saved conversation: restore its wire history as the active backend
 /// context and return the display messages for the frontend to render.
+/// What the frontend needs to rebuild a chat: its rendered messages plus the attachment
+/// ledger, split by whether each file is still on disk. `missing` is returned rather than
+/// dropped so the model can tell the user a file has moved instead of quietly reinventing it.
+#[derive(Serialize)]
+pub struct LoadedConversation {
+    pub display: serde_json::Value,
+    pub attachments: Vec<String>,
+    pub missing_attachments: Vec<String>,
+}
+
 #[tauri::command]
 fn load_conversation(
     args: ConversationIdArgs,
     state: State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
+) -> Result<LoadedConversation, String> {
     let conv = history::load_one(&args.id).ok_or("conversation not found")?;
+    let (attachments, missing_attachments) = history::split_attachments(&conv.attachments);
     *state.conversation.lock().unwrap() = conv.wire;
     *state.active_conversation_id.lock().unwrap() = Some(args.id);
-    Ok(conv.display)
+    Ok(LoadedConversation { display: conv.display, attachments, missing_attachments })
 }
 
 #[tauri::command]
@@ -416,6 +432,13 @@ pub struct SendMessageArgs {
     /// read/write these even if they fall outside the configured allowed dirs.
     #[serde(default)]
     pub file_paths: Vec<String>,
+    /// Files attached EARLIER in this conversation. They join the sandbox allow-list so a
+    /// later turn can still edit them ("make the beard lighter" three messages on), but are
+    /// deliberately NOT re-encoded into `images` — the model already sees them through the
+    /// retained history, and re-sending every prior photo as base64 each turn would balloon
+    /// the context.
+    #[serde(default)]
+    pub prior_file_paths: Vec<String>,
     // LLM generation options (all optional)
     #[serde(default)]
     pub temperature: Option<f64>,
@@ -682,6 +705,10 @@ async fn send_message(
             // to the photo and loops searching the user's folders for it.
             let mut p = args.file_paths.clone();
             p.extend(args.image_paths.iter().cloned());
+            // Earlier attachments stay reachable for the whole conversation.
+            p.extend(args.prior_file_paths.iter().cloned());
+            p.sort();
+            p.dedup();
             p
         },
         args.web_search_results,

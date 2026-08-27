@@ -101,7 +101,7 @@ const ALL_BUILTIN_TOOLS: ToolSchema[] = [
   { type: "function", function: { name: "get_current_datetime", description: "Get the current local date and time. Returns human-readable, ISO 8601, filename-safe, and Unix timestamp formats. Use whenever you need today's date or a timestamp for a filename.", parameters: { type: "object", properties: {}, required: [] } } },
   { type: "function", function: { name: "run_python", description: "Execute real Python (CPython) in a secure, offline sandbox to compute, analyse data, and CREATE CHARTS. The full standard library plus numpy, pandas, matplotlib, scipy, sympy, openpyxl (read/write Excel .xlsx), beautifulsoup4 (parse HTML), and geopandas with shapely & pyproj (geospatial — plot points/lines/polygons and choropleth MAPS as a matplotlib figure; note there is no online street/satellite basemap offline, so for a street-map backdrop use a connected map tool instead), python-pptx (build editable PowerPoint .pptx decks — used by the 'presentation' skill), python-docx (build editable Word .docx documents — 'from docx import Document'; save to /work/out), and Pillow/PIL (open, edit and save raster images — recolour, adjust, crop, resize, filter, composite/overlay, and draw shapes or text) are available — import them normally. These are the ONLY third-party packages, and there is NO network access, so do not import anything else (e.g. requests, scikit-learn, plotly, contextily) — it will fail. Use print() for text output. Files live in a virtual workspace at /work/uploads/: the user's attached files are there — documents (PDF, Word) are ALREADY extracted to plain text, so just open() and read them (do NOT try to PDF-parse); data files (CSV, Excel, JSON) are as-is for pandas. IMAGES the user attached are there too as REAL image files at /work/uploads/<filename> — to edit an attached photo, open it with Pillow (from PIL import Image; im = Image.open('/work/uploads/<name>')), make the change, and im.save('/work/out/<name>') — do NOT search the user's folders for it and do NOT claim you can't find it. (Note: Pillow does pixel/colour edits, not semantic object selection — to repaint a specific object like 'the building' while keeping the rest of the photo, use the generate_image tool's source_image edit mode instead.) SAVE any output (files, charts) to /work/out/ (kept for the user). To hand BULK DATA to a create_artifact page (route polylines, coordinate lists, big tables) write it to /work/artifacts/<name>.json instead — those files are NOT saved to the user's disk and are NOT printed back to you; you then reference them in the HTML as {{data:<name>.json}}. Unlike the rest of /work, files in /work/artifacts PERSIST across messages in this conversation, so you can build a dataset in one message and read it back (or render it) in a later one. Always prefer that over print()ing the values and copying them into the HTML yourself. Your /work files (and Python variables) PERSIST across run_python calls within the same turn — a chart PNG you saved in one call is still there in the next — and reset only when the user sends a new message. So you can build a task up across calls (e.g. generate chart PNGs in one call, then read them to build a PowerPoint in another). (For a plain read/summary of a document with no computation, prefer the read_file tool — no code or permission needed.) Use normal Python I/O — open(), pathlib, pd.read_csv('/work/uploads/data.csv'). TO SHOW A GRAPH, build a matplotlib figure (e.g. `import matplotlib.pyplot as plt; plt.plot(x, y)`) — it is rendered INLINE in the chat automatically — you do NOT need to save it (do NOT hand-draw ASCII or SVG). Only use plt.savefig('/work/out/name.png') if the user explicitly wants a saved file — /work/out is an in-memory scratch path, but anything you write there is copied to a real folder on the user's disk and the tool result reports that real absolute path. When telling the user where a file was saved, quote the real path from the tool result (the line marked SAVED TO DISK); NEVER tell the user the file is at /work/out (they cannot open that). No network access. Do not read/write paths outside /work.", parameters: { type: "object", properties: { code: { type: "string", description: "The Python source code to execute." } }, required: ["code"] } } },
   { type: "function", function: { name: "create_artifact", description: "Render a rich, self-contained HTML page inline in the chat, with a Save button (saves as a .html file the user can open in any browser). Use this for polished deliverables — formatted reports, dashboards, styled tables/cards, or simple interactive views — when plain markdown isn't enough. The HTML MUST be fully self-contained: inline all CSS in a <style> tag and any JS in a <script> tag; NO external URLs, fonts, images, or CDNs (they are blocked) — EXCEPT for maps, where you MAY load Leaflet from unpkg/jsdelivr and OpenStreetMap/Mapbox map tiles (use these to draw a street map with real data points). To include a chart, map or image you generated earlier THIS TURN (e.g. a matplotlib chart from run_python, a map, or a photo from generate_image — great for building an image slide deck), use the placeholder token as the image source: <img src=\"{{figure:1}}\"> for the first such image, {{figure:2}} for the second, and so on (in the order they were created) — LexiChat substitutes the real image. To include an image the USER ATTACHED this turn (e.g. a logo or a photo to place on slides), reference it as <img src=\"{{upload:1}}\"> for the first attached image, {{upload:2}} for the second, etc. (in attachment order) — LexiChat substitutes it. Do NOT paste base64 image data yourself. Any other images must be data: URIs. To embed BULK DATA (a route polyline, a coordinate list, a long table) that you produced in run_python, do NOT retype the values into this HTML — that is slow and loses points. Instead write the data to /work/artifacts/<name>.json in run_python, then put the token {{data:<name>.json}} where the values go, e.g. <script>const DATA = {{data:route.json}};</script>. LexiChat splices in the exact file contents. It renders in a sandboxed frame. Do NOT put your final prose answer inside the artifact — write a short summary in chat and put the rich content in the artifact. To show ANY HTML (a page, a map, a dashboard) you MUST call THIS tool with the HTML — NEVER paste raw HTML, a <script>, or an <iframe> into your chat reply, which renders as source text, not a page.", parameters: { type: "object", properties: { title: { type: "string", description: "Short title for the artifact (used as the saved filename and header)." }, html: { type: "string", description: "A complete, self-contained HTML document (or fragment) with all CSS/JS inlined and no external resources." } }, required: ["title", "html"] } } },
-  { type: "function", function: { name: "generate_image", description: "Generate an image from a text description, OR edit an image the user attached, using the local offline image model (stable-diffusion). Use it whenever the user asks you to create, draw, generate, illustrate, paint, or make an image — and ALSO when they ask you to edit, restyle, or repaint an attached photo (e.g. 'make the building in this photo pink'): for that, pass source_image. The result is displayed inline automatically — refer to it as \"shown above\"; do NOT output an image URL or a markdown image. To put a result into a SLIDE DECK or document: embed it in a create_artifact HTML slide via its placeholder <img src=\"{{figure:N}}\"> (N = the order it was generated), OR read it in run_python from the path the tool result reports (/work/data/generated_image_N.png) and add it to a .pptx with python-pptx add_picture. You do NOT need to re-generate images to reuse them. Note: source_image edits the WHOLE image toward the prompt (image-to-image) — great for recolouring/restyling a scene or object while keeping the composition, but NOT pixel-exact; for precise deterministic edits (exact colour swap, crop, overlay text) use run_python with Pillow instead.", parameters: { type: "object", properties: { prompt: { type: "string", description: "A detailed description of the image to create — or, when editing, of the desired end result (describe the whole scene as it should look after the edit, e.g. 'a street with the foreground building painted pink')." }, negative_prompt: { type: "string", description: "Things to avoid in the image (optional)." }, source_image: { type: "string", description: "To EDIT an attached image instead of creating a new one: the /work/uploads/<filename> path of the image the user attached to this message. Omit to generate from scratch. Only attached images can be used." }, strength: { type: "number", description: "Edit strength for source_image, 0.0–1.0 (optional, default 0.6, or 0.85 with mask_regions). Lower stays closer to the original; higher diverges more. Ignored without source_image." }, mask_regions: { type: "string", description: "To change ONLY part of source_image and keep the rest pixel-identical (e.g. 'the building', 'the sky'): region(s) as normalized (0..1) shapes separated by ';' — 'rect x y w h' or 'ellipse cx cy rx ry'. Estimate the region from the image you can see, e.g. 'rect 0 0.35 0.45 0.65'. If the user painted a region on the image it is used automatically (omit this). Omit to edit the whole image." }, size: { type: "integer", description: "New images: square size in px (512/768/1024). When editing: caps the longer edge; original aspect ratio is kept (optional)." }, steps: { type: "integer", description: "Sampling steps; Turbo models want ~4 (optional)." }, seed: { type: "integer", description: "Seed for reproducibility (optional)." } }, required: ["prompt"] } } },
+  { type: "function", function: { name: "generate_image", description: "Generate an image from a text description, OR edit an image the user attached, using the local offline image model (stable-diffusion). Use it whenever the user asks you to create, draw, generate, illustrate, paint, or make an image — and ALSO when they ask you to edit, restyle, or repaint an attached photo (e.g. 'make the building in this photo pink'): for that, pass source_image. The result is displayed inline automatically — refer to it as \"shown above\"; do NOT output an image URL or a markdown image. To put a result into a SLIDE DECK or document: embed it in a create_artifact HTML slide via its placeholder <img src=\"{{figure:N}}\"> (N = the order it was generated), OR read it in run_python from the path the tool result reports (/work/data/generated_image_N.png) and add it to a .pptx with python-pptx add_picture. You do NOT need to re-generate images to reuse them. Note: source_image edits the WHOLE image toward the prompt (image-to-image) — great for recolouring/restyling a scene or object while keeping the composition, but NOT pixel-exact; for precise deterministic edits (exact colour swap, crop, overlay text) use run_python with Pillow instead.", parameters: { type: "object", properties: { prompt: { type: "string", description: "A detailed description of the image to create — or, when editing, of the desired end result (describe the whole scene as it should look after the edit, e.g. 'a street with the foreground building painted pink')." }, negative_prompt: { type: "string", description: "Things to avoid in the image (optional)." }, source_image: { type: "string", description: "To EDIT an attached image instead of creating a new one: the /work/uploads/<filename> path of an image the user attached ANYWHERE in this conversation — the current message or an earlier one. Earlier attachments stay editable; do not claim a photo is no longer attached. Omit to generate from scratch." }, strength: { type: "number", description: "Edit strength for source_image, 0.0–1.0 (optional, default 0.6, or 0.85 with mask_regions). Lower stays closer to the original; higher diverges more. Ignored without source_image." }, mask_regions: { type: "string", description: "To change ONLY part of source_image and keep the rest pixel-identical (e.g. 'the building', 'the sky'): region(s) as normalized (0..1) shapes separated by ';' — 'rect x y w h' or 'ellipse cx cy rx ry'. Estimate the region from the image you can see, e.g. 'rect 0 0.35 0.45 0.65'. If the user painted a region on the image it is used automatically (omit this). Omit to edit the whole image." }, size: { type: "integer", description: "New images: square size in px (512/768/1024). When editing: caps the longer edge; original aspect ratio is kept (optional)." }, steps: { type: "integer", description: "Sampling steps; Turbo models want ~4 (optional)." }, seed: { type: "integer", description: "Seed for reproducibility (optional)." } }, required: ["prompt"] } } },
 ];
 
 // Built-in tools a chat gets when NO profile is active: read-only / no-side-effect only. Mutating
@@ -1904,6 +1904,14 @@ export default function App() {
   // the backend persists the same files and re-stages them into /work/artifacts each turn, so a
   // dataset built in one message can be rendered in a later one. Cleared on reset / new chat.
   const turnDataFilesRef = useRef<Map<string, PyDataFile>>(new Map());
+  // Every file attached so far in THIS conversation. Attachments are cleared from the
+  // composer on send, but the files stay on disk and stay editable — "make the beard
+  // lighter" three messages later must edit that photo, not reimagine it. Conversation-
+  // scoped, so a new or reopened chat never inherits the previous one's files.
+  const conversationFilesRef = useRef<string[]>([]);
+  // Attachments a reopened chat expected but that are no longer on disk (moved or deleted
+  // since it was saved). Named to the model so it says so, rather than reinventing the file.
+  const missingAttachmentsRef = useRef<string[]>([]);
   // Result of the artifact inline-script probe, surfaced in /dev/state for headless diagnosis.
   const artifactProbeResultRef = useRef<boolean | null>(null);
   const artifactFrameProbesRef = useRef<FrameProbe[] | null>(null);
@@ -1939,6 +1947,7 @@ export default function App() {
           profile_id: settings.activeProfileId ?? null,
           model: selectedModel,
           message_count: msgs.length,
+          attachments: conversationFilesRef.current,
         },
       });
       setActiveConversationId(meta.id);
@@ -1964,9 +1973,16 @@ export default function App() {
   const handleSelectConversation = async (id: string) => {
     if (isRunning) return;
     try {
-      const display = await invoke<ChatMessage[]>("load_conversation", { args: { id } });
-      setMessages(Array.isArray(display) ? display : []);
+      const loaded = await invoke<{
+        display: ChatMessage[]; attachments: string[]; missing_attachments: string[];
+      }>("load_conversation", { args: { id } });
+      setMessages(Array.isArray(loaded.display) ? loaded.display : []);
       setActiveConversationId(id);
+      // Restore the chat's attachment ledger so its photos stay editable. Rust has already
+      // split off any file that is no longer on disk.
+      turnDataFilesRef.current = new Map();
+      conversationFilesRef.current  = loaded.attachments ?? [];
+      missingAttachmentsRef.current = loaded.missing_attachments ?? [];
     } catch { /* conversation missing */ }
   };
 
@@ -1977,6 +1993,9 @@ export default function App() {
         await invoke("reset_conversation");
         setActiveConversationId(null);
         setMessages([]);
+        turnDataFilesRef.current = new Map();
+        conversationFilesRef.current = [];
+        missingAttachmentsRef.current = [];
       }
       refreshConversations();
     } catch { /* ignore */ }
@@ -2465,7 +2484,33 @@ export default function App() {
         }).join("\n")}\nTo PLACE an attached image in a create_artifact deck/page use its {{upload:N}} token (do NOT try to inline its file path or base64 — that won't work). To EDIT an attached image (recolour, restyle, or change part of it) call generate_image with source_image set to its path above (add mask_regions to change only part of it), or open it in run_python with Pillow for exact pixel edits. Do NOT say you cannot access the file and do NOT regenerate the scene from scratch when the user wants THIS image changed.`
       : "";
 
-    const fullText = `${text}${filesNote}${imageNote}`;
+    // Files from earlier turns are still on disk and still in the sandbox allow-list, so
+    // they remain editable. Say so explicitly — otherwise the model reports the photo as
+    // "not attached" and regenerates it from its own description.
+    const priorFiles  = conversationFilesRef.current.filter(p => !attachedFiles.includes(p));
+    const priorImages = priorFiles.filter(isImage);
+    const priorOther  = priorFiles.filter(f => !isImage(f));
+    const priorNote = priorFiles.length > 0
+      ? `\n\nAlso still available from EARLIER in this conversation (attached to a previous message, and still editable/readable now):${
+          priorImages.length > 0
+            ? `\nImages — edit with generate_image using source_image, or open in run_python with Pillow:\n${
+                priorImages.map(p => `- /work/uploads/${p.split("/").pop()}`).join("\n")}`
+            : ""
+        }${
+          priorOther.length > 0
+            ? `\nFiles — read with read_file:\n${priorOther.map(f => `- ${f}`).join("\n")}`
+            : ""
+        }\nDo NOT say these are no longer attached, and do NOT regenerate an earlier image from your description when the user wants THAT image changed.`
+      : "";
+
+    // A reopened chat stores paths, not bytes, so a file may have been moved or deleted since.
+    // Name them: the right answer is to tell the user, not to reinvent the file.
+    const missingNote = missingAttachmentsRef.current.length > 0
+      ? `\n\nAttached earlier in this conversation but NO LONGER on disk (the user moved or deleted them):\n${
+          missingAttachmentsRef.current.map(f => `- ${f}`).join("\n")}\nIf the user asks about one of these, say the file is no longer where it was and ask them to re-attach it. Do NOT invent its contents and do NOT regenerate an image to stand in for it.`
+      : "";
+
+    const fullText = `${text}${filesNote}${imageNote}${priorNote}${missingNote}`;
 
     // Build display text — only list non-image attachments (images shown as thumbnails)
     const displayText = otherFiles.length > 0
@@ -2478,6 +2523,10 @@ export default function App() {
     ).then(urls => urls.filter(Boolean));
 
     setMessages(prev => [...prev, { id: uid(), role: "user", text: displayText, imageDataUrls }]);
+    conversationFilesRef.current = [
+      ...conversationFilesRef.current,
+      ...attachedFiles.filter(f => !conversationFilesRef.current.includes(f)),
+    ];
     setAttachedFiles([]);
     setImageMasks({});
     setInput("");
@@ -2616,6 +2665,7 @@ export default function App() {
           api_key: targetServer?.apiKey ?? null,
           tools: enabledTools,
           image_paths: imagePaths,
+          prior_file_paths: priorFiles,
           image_masks: imageMasksAligned,
           file_paths: otherFiles,
           temperature: resolved.temperature,
@@ -2685,6 +2735,8 @@ export default function App() {
     // Artifact data is conversation-scoped: a new chat must not resolve a {{data:}} token against
     // the previous conversation's dataset.
     turnDataFilesRef.current = new Map();
+    conversationFilesRef.current = [];
+    missingAttachmentsRef.current = [];
     setMessages([]);
     setActiveConversationId(null);
     setDebugClearKey(k => k + 1);
