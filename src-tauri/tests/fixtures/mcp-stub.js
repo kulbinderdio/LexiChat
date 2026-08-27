@@ -31,11 +31,21 @@ function handle(msg) {
   if (method === "tools/list") {
     return send({ jsonrpc: "2.0", id, result: { tools: [
       { name: "echo", description: "Echo text", inputSchema: { type: "object", properties: { text: { type: "string" } } } },
+      { name: "report_env", description: "Report selected env vars the process was spawned with",
+        inputSchema: { type: "object", properties: { keys: { type: "array", items: { type: "string" } } } } },
       { name: "show_ui", description: "Show a UI", inputSchema: { type: "object" }, _meta: { ui: { resourceUri: "ui://stub/app" } } },
     ] }});
   }
   if (method === "tools/call") {
     const name = params && params.name;
+    // Reports the environment the process was actually spawned with, so a test can prove the
+    // configured env vars reach the child rather than assuming they do.
+    if (name === "report_env") {
+      const keys = (params.arguments && params.arguments.keys) || [];
+      const seen = {};
+      for (const k of keys) if (process.env[k] !== undefined) seen[k] = process.env[k];
+      return send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(seen) }] } });
+    }
     if (name === "echo") {
       const text = (params.arguments && params.arguments.text) || "echoed";
       return send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }] } });

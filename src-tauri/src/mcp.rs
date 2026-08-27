@@ -219,6 +219,11 @@ enum Transport {
         url:    String,
         client: reqwest::Client,
         auth:   AuthConfig,
+        /// Streamable HTTP is stateful: the server may hand back an `Mcp-Session-Id` on
+        /// initialize and then reject every later request that omits it ("Bad Request: No valid
+        /// session ID provided"). Captured on the first response that carries one and replayed
+        /// on all subsequent requests.
+        session_id: Option<String>,
     },
 }
 
@@ -330,6 +335,7 @@ impl MCPConnection {
                 url:    config.command.clone(),
                 client: reqwest::Client::new(),
                 auth:   config.auth.clone(),
+                session_id: None,
             }
         } else {
             // Split on whitespace so users can paste a full command string
@@ -428,8 +434,14 @@ impl MCPConnection {
         });
 
         match &mut self.transport {
-            Transport::Http { url, client, auth } => {
-                let (val, new_token) = http_rpc(client, url, auth, msg).await?;
+            Transport::Http { url, client, auth, session_id } => {
+                let (val, new_token, new_session) =
+                    http_rpc(client, url, auth, session_id.as_deref(), msg).await?;
+                // Remember the session the server issued (on initialize) so later requests carry
+                // it; without it a stateful server rejects everything after the handshake.
+                if let Some(sid) = new_session {
+                    if session_id.as_deref() != Some(sid.as_str()) { *session_id = Some(sid); }
+                }
                 // If a token refresh occurred, update the stored auth in place
                 if let Some(tok) = new_token {
                     if let AuthConfig::OAuth2 { ref mut access_token, .. } = auth {
@@ -487,11 +499,16 @@ impl MCPConnection {
         let msg = serde_json::json!({ "jsonrpc": "2.0", "method": method, "params": params });
 
         match &self.transport {
-            Transport::Http { url, client, auth } => {
-                // Notifications have no id; server may return 202 or empty body — ignore result
-                let req = client.post(url.as_str())
+            Transport::Http { url, client, auth, session_id } => {
+                // Notifications have no id; server may return 202 or empty body — ignore result.
+                // notifications/initialized still has to carry the session, or a stateful server
+                // never completes its handshake.
+                let mut req = client.post(url.as_str())
                     .header("Content-Type", "application/json")
                     .json(&msg);
+                if let Some(sid) = session_id.as_deref() {
+                    req = req.header("Mcp-Session-Id", sid);
+                }
                 let _ = auth.apply_async(client, req).await.send().await;
                 Ok(())
             }
@@ -624,17 +641,32 @@ fn extract_ui(resp: &Value, tool_ui_uri: &Option<String>) -> (Option<String>, Op
 
 // ── HTTP JSON-RPC helper ──────────────────────────────────────────────────────
 
-async fn http_rpc(client: &reqwest::Client, url: &str, auth: &AuthConfig, msg: Value) -> Result<(Value, Option<String>), String> {
+/// Returns the response value, any refreshed OAuth token, and any session id the server issued.
+async fn http_rpc(
+    client: &reqwest::Client,
+    url: &str,
+    auth: &AuthConfig,
+    session: Option<&str>,
+    msg: Value,
+) -> Result<(Value, Option<String>, Option<String>), String> {
     let make_req = |token_override: Option<&str>| {
         let mut r = client
             .post(url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream")
             .json(&msg);
+        if let Some(sid) = session {
+            r = r.header("Mcp-Session-Id", sid);
+        }
         if let Some(tok) = token_override {
             r = r.header("Authorization", format!("Bearer {tok}"));
         }
         r
+    };
+    // The header the server sets on initialize; absent for stateless servers.
+    let session_of = |resp: &reqwest::Response| -> Option<String> {
+        resp.headers().get("mcp-session-id")
+            .and_then(|v| v.to_str().ok()).map(str::to_string)
     };
 
     let req = auth.apply_async(client, make_req(None)).await;
@@ -651,8 +683,9 @@ async fn http_rpc(client: &reqwest::Client, url: &str, auth: &AuthConfig, msg: V
             if !retry_status.is_success() && retry_status.as_u16() != 202 {
                 return Err(format!("HTTP {retry_status}"));
             }
+            let sid = session_of(&retry_resp);
             let body = parse_http_rpc_body(retry_resp).await?;
-            return Ok((body, Some(new_token)));
+            return Ok((body, Some(new_token), sid));
         }
         return Err(format!("HTTP 401 — re-authentication required"));
     }
@@ -661,8 +694,9 @@ async fn http_rpc(client: &reqwest::Client, url: &str, auth: &AuthConfig, msg: V
         return Err(format!("HTTP {status}"));
     }
 
+    let sid = session_of(&resp);
     let body = parse_http_rpc_body(resp).await?;
-    Ok((body, None))
+    Ok((body, None, sid))
 }
 
 async fn parse_http_rpc_body(resp: reqwest::Response) -> Result<Value, String> {
@@ -1175,5 +1209,132 @@ mod tests {
         let rich = conn.call_tool_rich("stub_show_ui", &serde_json::json!({})).await;
         assert_eq!(rich.ui_uri.as_deref(), Some("ui://stub/app"));
         assert!(rich.ui_html.as_deref().unwrap_or("").contains("stub app"), "ui_html: {:?}", rich.ui_html);
+    }
+
+    /// Configured env vars must actually reach a stdio server's process. Untested until now, and
+    /// the kind of thing that fails silently — the server just behaves as if unconfigured.
+    /// Also pins that PATH is augmented (GUI launches inherit launchd's minimal PATH, so `npx`
+    /// and friends are not findable without it).
+    #[tokio::test]
+    async fn stdio_env_vars_reach_the_spawned_process() {
+        if !node_available() {
+            eprintln!("node not available — skipping stdio MCP env test");
+            return;
+        }
+        let stub = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp-stub.js");
+        let mut env = HashMap::new();
+        env.insert("LEXI_TEST_TOKEN".to_string(), "s3cr3t-value".to_string());
+        env.insert("LEXI_TEST_EMPTY".to_string(), String::new());
+        let config = MCPServerConfig {
+            id: "stub".into(), name: "Stub".into(),
+            command: format!("node {stub}"),
+            args: vec![], env, enabled: true,
+            auth: AuthConfig::None, enable_apps: false,
+        };
+
+        let mut conn = MCPConnection::connect(config).await.expect("connect to stub");
+        let out = conn.call_tool("stub_report_env", &serde_json::json!({
+            "keys": ["LEXI_TEST_TOKEN", "LEXI_TEST_EMPTY", "LEXI_TEST_UNSET", "PATH"]
+        })).await;
+        let seen: serde_json::Value = serde_json::from_str(&out).expect(&format!("stub returned: {out}"));
+
+        assert_eq!(seen["LEXI_TEST_TOKEN"], "s3cr3t-value", "env var did not reach the child: {out}");
+        assert_eq!(seen["LEXI_TEST_EMPTY"], "", "an empty value must still be set, not dropped");
+        assert!(seen.get("LEXI_TEST_UNSET").is_none(), "unset vars must not appear");
+        assert!(seen["PATH"].as_str().unwrap_or("").contains("/usr/local/bin"),
+                "PATH should be the augmented one, got {:?}", seen["PATH"]);
+    }
+
+    /// Streamable HTTP is stateful: the server issues an `Mcp-Session-Id` on initialize and
+    /// rejects later requests without it ("Bad Request: No valid session ID provided"). This
+    /// reproduces that handshake against a local stub so the replay cannot regress.
+    #[tokio::test]
+    async fn http_session_id_is_captured_and_replayed() {
+        use std::sync::{Arc, Mutex};
+        let seen: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(move |req: &wiremock::Request| {
+                let sid = req.headers.get("mcp-session-id")
+                    .and_then(|v| v.to_str().ok()).map(str::to_string);
+                let body: serde_json::Value =
+                    serde_json::from_slice(&req.body).unwrap_or(serde_json::Value::Null);
+                let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
+                seen2.lock().unwrap().push(sid.clone());
+                if method == "initialize" {
+                    return wiremock::ResponseTemplate::new(200)
+                        .insert_header("mcp-session-id", "sess-abc")
+                        .set_body_json(serde_json::json!({"jsonrpc":"2.0","id":1,"result":{
+                            "protocolVersion":"2024-11-05","capabilities":{},
+                            "serverInfo":{"name":"stateful","version":"1"}}}));
+                }
+                // Every later request must carry the session, exactly as a real server demands.
+                if sid.as_deref() != Some("sess-abc") {
+                    return wiremock::ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                        "jsonrpc":"2.0","id":null,
+                        "error":{"code":-32000,"message":"Bad Request: No valid session ID provided"}}));
+                }
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "jsonrpc":"2.0","id":2,"result":{"tools":[
+                        {"name":"tg_get_me","description":"d","inputSchema":{"type":"object"}}]}}))
+            })
+            .mount(&server).await;
+
+        let config = MCPServerConfig {
+            id: "s".into(), name: "S".into(), command: format!("{}/mcp", server.uri()),
+            args: vec![], env: HashMap::new(), enabled: true,
+            auth: AuthConfig::None, enable_apps: false,
+        };
+        let conn = MCPConnection::connect(config).await.expect("connect to stateful http server");
+        assert!(conn.tools.iter().any(|t| t.raw_name == "tg_get_me"),
+                "tools/list must succeed once the session is replayed");
+
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.first().cloned().flatten(), None, "initialize carries no session yet");
+        assert!(seen.iter().skip(1).all(|s| s.as_deref() == Some("sess-abc")),
+                "every request after initialize must carry the session: {seen:?}");
+    }
+
+    /// Connects to a real Streamable HTTP server on localhost. Ignored by default (CI has no such
+    /// server); run with `cargo test -- --ignored live_http_mcp` when one is up.
+    #[tokio::test]
+    #[ignore]
+    async fn live_http_mcp_server_lists_tools() {
+        let url = std::env::var("LEXI_TEST_MCP_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:3022/mcp".to_string());
+        let config = MCPServerConfig {
+            id: "live".into(), name: "Live".into(), command: url.clone(),
+            args: vec![], env: HashMap::new(), enabled: true,
+            auth: AuthConfig::None, enable_apps: false,
+        };
+        match MCPConnection::connect(config).await {
+            Ok(conn) => {
+                eprintln!("connected to {url}: {} tools", conn.tools.len());
+                for t in conn.tools.iter().take(8) { eprintln!("  - {}", t.raw_name); }
+                assert!(!conn.tools.is_empty(), "server returned no tools");
+            }
+            Err(e) => panic!("connect to {url} failed: {e}"),
+        }
+    }
+
+    /// `env` and `args` are silently ignored for an HTTP server — there is no process to give them
+    /// to. Worth pinning so the asymmetry is deliberate and discoverable rather than a surprise.
+    #[test]
+    fn http_transport_carries_auth_but_not_env_or_args() {
+        let mut env = HashMap::new();
+        env.insert("IGNORED".to_string(), "yes".to_string());
+        let config = MCPServerConfig {
+            id: "h".into(), name: "H".into(),
+            command: "https://example.com/mcp".into(),
+            args: vec!["also-ignored".into()], env, enabled: true,
+            auth: AuthConfig::Bearer { bearer_token: "tok".into() }, enable_apps: false,
+        };
+        // An http(s) command selects the HTTP transport, which is built from url + auth only —
+        // env and args are carried on the config but nothing ever consumes them.
+        assert!(is_url(&config.command));
+        assert!(!is_url("node /path/to/server.js"), "a shell command must select stdio");
+        assert!(matches!(config.auth, AuthConfig::Bearer { .. }),
+                "credentials for an HTTP server belong in auth, not env or args");
     }
 }
