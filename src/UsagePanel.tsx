@@ -30,7 +30,10 @@ function fmt(n: number): string {
   if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "k";
   return String(n);
 }
-const gb = (bytes: number) => (bytes / 1e9).toFixed(1);
+// Binary GiB, not decimal GB — every OS reports RAM this way, so a 128 GB Mac must
+// read as 128, not 137.4. Used for system, process and model memory alike so the
+// numbers stay comparable against one another.
+const gb = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
 function shortDay(iso: string): string {
   const d = new Date(iso + "T00:00:00");
   return isNaN(d.getTime()) ? iso.slice(5) : d.toLocaleDateString(undefined, { weekday: "short" });
