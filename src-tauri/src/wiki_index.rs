@@ -367,6 +367,64 @@ pub async fn semantic_search(backend: &Backend, query: &str, limit: usize) -> an
     Ok(Some(rank(&query_vec, &pages, limit)))
 }
 
+// ── Graph edges ───────────────────────────────────────────────────────────────
+
+/// Two pages that are about similar things, with how similar they are.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SemanticEdge {
+    pub a: String,
+    pub b: String,
+    pub score: f32,
+}
+
+/// Mean of a page's chunk vectors — one point standing for the whole page.
+///
+/// Averaging loses the detail that per-chunk search needs, which is exactly why it suits a
+/// graph: a page about two subjects lands between them rather than appearing twice.
+pub fn centroid(vectors: &[Vec<f32>]) -> Vec<f32> {
+    let Some(dim) = vectors.first().map(|v| v.len()) else { return Vec::new() };
+    if dim == 0 || vectors.iter().any(|v| v.len() != dim) {
+        return Vec::new();
+    }
+    let n = vectors.len() as f32;
+    (0..dim).map(|i| vectors.iter().map(|v| v[i]).sum::<f32>() / n).collect()
+}
+
+/// Every pair of pages whose centroids are at least `min_score` alike, strongest first.
+///
+/// Returns an empty list when the wiki has never been indexed — the graph then falls back to
+/// explicit links only, rather than showing nothing.
+pub fn semantic_edges(min_score: f32) -> Vec<SemanticEdge> {
+    let index = load_index();
+    let centroids: Vec<(String, Vec<f32>)> = index
+        .pages
+        .iter()
+        .map(|(path, page)| (path.clone(), centroid(&page.vectors)))
+        .filter(|(_, c)| !c.is_empty())
+        .collect();
+
+    let mut edges = Vec::new();
+    for i in 0..centroids.len() {
+        for j in (i + 1)..centroids.len() {
+            let score = cosine(&centroids[i].1, &centroids[j].1);
+            if score >= min_score {
+                edges.push(SemanticEdge {
+                    a: centroids[i].0.clone(),
+                    b: centroids[j].0.clone(),
+                    score,
+                });
+            }
+        }
+    }
+    edges.sort_by(|x, y| y.score.partial_cmp(&x.score).unwrap_or(std::cmp::Ordering::Equal));
+    edges
+}
+
+/// Chunk count per page, so the graph can size a node by how much is written on it.
+pub fn chunk_counts() -> std::collections::HashMap<String, usize> {
+    load_index().pages.into_iter().map(|(p, page)| (p, page.chunks.len())).collect()
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -572,6 +630,19 @@ mod tests {
             println!("  {:.3}  {}  [{}]\n         {}", h.score, h.path, h.heading, h.snippet);
         }
         assert!(!hits.is_empty(), "expected at least one semantic hit");
+    }
+
+    #[test]
+    fn centroid_averages_a_page_into_one_point() {
+        let c = centroid(&[vec![1.0, 0.0], vec![0.0, 1.0]]);
+        assert_eq!(c, vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn centroid_refuses_ragged_or_empty_input() {
+        // A corrupt index entry must yield no edge rather than a meaningless one.
+        assert!(centroid(&[]).is_empty());
+        assert!(centroid(&[vec![1.0, 2.0], vec![3.0]]).is_empty());
     }
 
     #[test]

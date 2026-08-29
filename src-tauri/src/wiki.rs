@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use serde_json::Value;
+use serde::Serialize;
 
 // ── Wiki directory ────────────────────────────────────────────────────────────
 
@@ -515,6 +516,157 @@ pub fn wiki_schemas() -> Vec<serde_json::Value> {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
+// ── Graph ─────────────────────────────────────────────────────────────────────
+
+/// A page as a node: enough to draw and label it without reading the file again.
+#[derive(Debug, Clone, Serialize)]
+pub struct WikiNode {
+    pub path: String,
+    /// First path component ("people", "projects"), or "" for a page at the root. Drives colour.
+    pub folder: String,
+    /// First heading in the page, falling back to the filename.
+    pub title: String,
+    pub bytes: usize,
+    /// Indexed chunks — a rough measure of how much is written, and 0 when unindexed.
+    pub chunks: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WikiLink {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WikiGraph {
+    pub nodes: Vec<WikiNode>,
+    /// Links actually written in the Markdown.
+    pub links: Vec<WikiLink>,
+    /// Pages that are merely about similar things. Empty when nothing has been indexed.
+    pub related: Vec<crate::wiki_index::SemanticEdge>,
+    /// True when semantic edges are unavailable, so the UI can explain the sparser graph
+    /// instead of implying the wiki has no structure.
+    pub unindexed: bool,
+}
+
+/// Wiki links written in a page, as relative page paths.
+///
+/// Handles both spellings the wiki uses: Markdown `[label](people/alice.md)` and the
+/// `[[people/alice]]` wiki style. Anything with a scheme is an external URL, not a page.
+pub fn parse_links(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let bytes: Vec<char> = text.chars().collect();
+    let mut i = 0usize;
+
+    let normalise = |raw: &str| -> Option<String> {
+        let t = raw.trim().trim_start_matches("./");
+        if t.is_empty() || t.contains("://") || t.starts_with('#') {
+            return None;
+        }
+        // Drop any anchor, then ensure the .md the wiki resolver would add.
+        let t = t.split('#').next().unwrap_or(t).trim();
+        if t.is_empty() { return None; }
+        Some(if t.ends_with(".md") { t.to_string() } else { format!("{t}.md") })
+    };
+
+    while i < bytes.len() {
+        // [[wiki style]]
+        if bytes[i] == '[' && bytes.get(i + 1) == Some(&'[') {
+            if let Some(end) = (i + 2..bytes.len()).find(|&j| bytes[j] == ']' && bytes.get(j + 1) == Some(&']')) {
+                let inner: String = bytes[i + 2..end].iter().collect();
+                // "[[path|label]]" — the target is the part before the pipe.
+                let target = inner.split('|').next().unwrap_or(&inner).to_string();
+                if let Some(p) = normalise(&target) { out.push(p); }
+                i = end + 2;
+                continue;
+            }
+        }
+        // [label](target)
+        if bytes[i] == '[' {
+            if let Some(close) = (i + 1..bytes.len()).find(|&j| bytes[j] == ']') {
+                if bytes.get(close + 1) == Some(&'(') {
+                    if let Some(end) = (close + 2..bytes.len()).find(|&j| bytes[j] == ')') {
+                        let target: String = bytes[close + 2..end].iter().collect();
+                        if let Some(p) = normalise(&target) { out.push(p); }
+                        i = end + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// First `# heading` in a page, or the filename stem if it has none.
+fn page_title(text: &str, path: &str) -> String {
+    for line in text.lines().take(40) {
+        let level = line.chars().take_while(|c| *c == '#').count();
+        if (1..=6).contains(&level) && line.chars().nth(level) == Some(' ') {
+            let t = line[level + 1..].trim();
+            if !t.is_empty() { return t.to_string(); }
+        }
+    }
+    Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or(path).replace('_', " ")
+}
+
+/// Build the whole graph: one node per page, edges for real links, and edges for pages that
+/// are merely about similar things.
+///
+/// Link edges are kept only when both ends exist, so a broken link shows up in `wiki_lint`
+/// rather than as a phantom node here.
+pub fn wiki_graph(min_score: f32) -> WikiGraph {
+    let root = wiki_dir();
+    let mut pages: Vec<(String, String)> = Vec::new();
+    read_all_pages(&root, &root, &mut pages);
+
+    let chunk_counts = crate::wiki_index::chunk_counts();
+    let known: std::collections::HashSet<String> = pages.iter().map(|(p, _)| p.clone()).collect();
+
+    let mut nodes = Vec::new();
+    let mut links = Vec::new();
+    for (rel, text) in &pages {
+        let folder = Path::new(rel).parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .filter(|p| !p.is_empty())
+            .unwrap_or_default();
+        nodes.push(WikiNode {
+            path: rel.clone(),
+            folder,
+            title: page_title(text, rel),
+            bytes: text.len(),
+            chunks: chunk_counts.get(rel).copied().unwrap_or(0),
+        });
+        for target in parse_links(text) {
+            if target != *rel && known.contains(&target) {
+                links.push(WikiLink { from: rel.clone(), to: target });
+            }
+        }
+    }
+    nodes.sort_by(|a, b| a.path.cmp(&b.path));
+
+    let related = crate::wiki_index::semantic_edges(min_score);
+    WikiGraph { nodes, links, unindexed: chunk_counts.is_empty(), related }
+}
+
+/// Every `.md` page under the wiki, as (relative path, contents).
+fn read_all_pages(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            read_all_pages(root, &path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            if let (Ok(rel), Ok(text)) = (path.strip_prefix(root), fs::read_to_string(&path)) {
+                out.push((rel.to_string_lossy().to_string(), text));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -657,3 +809,5 @@ mod tests {
         }
     }
 }
+
+

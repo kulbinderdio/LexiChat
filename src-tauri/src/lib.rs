@@ -353,6 +353,29 @@ fn prune_orphan_conversation_files() {
     }
 }
 
+/// Delete one wiki page. Irreversible — the file is removed from disk, not moved to a bin —
+/// so the UI confirms first. Path traversal is rejected by the wiki resolver, and the removal
+/// is appended to log.md like any other change.
+#[tauri::command]
+fn delete_wiki_page(path: String) -> String {
+    wiki::wiki_delete(&serde_json::json!({ "path": path }))
+}
+
+/// The wiki as a graph: pages, the links between them, and pages that are merely about
+/// similar things. `min_score` filters the semantic edges — the UI exposes it as a slider,
+/// since the right threshold depends on how varied the wiki is.
+/// One wiki page's raw Markdown, for the graph's reading pane. Path traversal is rejected by
+/// the same resolver the wiki tools use, so this cannot read outside the wiki folder.
+#[tauri::command]
+fn read_wiki_page(path: String) -> String {
+    wiki::wiki_read(&serde_json::json!({ "path": path }))
+}
+
+#[tauri::command]
+fn get_wiki_graph(min_score: Option<f32>) -> wiki::WikiGraph {
+    wiki::wiki_graph(min_score.unwrap_or(0.6).clamp(0.0, 1.0))
+}
+
 #[derive(Deserialize)]
 pub struct ConversationIdArgs {
     pub id: String,
@@ -2576,6 +2599,9 @@ pub fn run() {
             list_conversations,
             save_active_conversation,
             load_conversation,
+            get_wiki_graph,
+            read_wiki_page,
+            delete_wiki_page,
             delete_conversation,
             rename_conversation,
         ])

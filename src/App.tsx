@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ReactMarkdown, { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Settings, RotateCcw, Bug, Paperclip, Info, Clock, PanelLeft, BarChart3 } from "lucide-react";
+import { Settings, RotateCcw, Bug, Paperclip, Info, Clock, PanelLeft, BarChart3, Brain } from "lucide-react";
 import { JobsPanel } from "./JobsPanel";
 import type { JobRun } from "./jobTypes";
 import lexiLogo from "./assets/lexi.png";
@@ -17,6 +17,7 @@ import { DebugPanel } from "./DebugPanel";
 import { UsageRail, UsageHistoryModal } from "./UsagePanel";
 import { MaskEditor } from "./MaskEditor";
 import { HistoryPanel, ConversationMeta } from "./HistoryPanel";
+import { WikiGraphPanel } from "./WikiGraphPanel";
 import "./App.css";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -1708,6 +1709,7 @@ export default function App() {
   const [showHistory, setShowHistory] = useState(false); // hidden on launch; toggle to open
   const [conversations, setConversations] = useState<ConversationMeta[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [showWikiGraph, setShowWikiGraph] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [btcCopied, setBtcCopied] = useState(false);
   const [view,     setView]     = useState<"chat" | "jobs">("chat");
@@ -2901,6 +2903,11 @@ export default function App() {
           style={{ opacity: showUsageLive ? 1 : 0.55 }}>
           <BarChart3 size={13} />
         </button>
+        {(activeProfile?.wikiEnabled ?? settings.wikiEnabled) === true && (
+          <button className="btn icon-only" onClick={() => setShowWikiGraph(true)} title="Memory Map">
+            <Brain size={13} />
+          </button>
+        )}
         <button className="btn icon-only" onClick={() => setShowAbout(true)} title="About LexiChat">
           <Info size={13} />
         </button>
@@ -2936,6 +2943,8 @@ export default function App() {
 
       {/* Main content: history sidebar + chat + optional debug panel */}
       <div style={{ display: view === "jobs" ? "none" : "flex", flex: 1, overflow: "hidden" }}>
+      {showWikiGraph && <WikiGraphPanel onClose={() => setShowWikiGraph(false)} />}
+
       <HistoryPanel
         visible={showHistory}
         conversations={conversations}
