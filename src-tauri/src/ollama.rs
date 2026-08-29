@@ -2358,6 +2358,19 @@ async fn dispatch_tool<R: tauri::Runtime>(
         };
     }
 
+    // wiki_search needs the Ollama backend to embed, and dispatch_builtin has no handle on it.
+    // Intercept here (same shape as generate_image above) rather than threading a backend
+    // through every dispatch_builtin call site.
+    if name == "wiki_search" {
+        let backend = app
+            .try_state::<crate::AppState>()
+            .map(|s| s.backend.lock().unwrap().clone());
+        return match backend {
+            Some(b) => crate::wiki::wiki_search_hybrid(args, &b).await,
+            None => crate::wiki::wiki_search(args),
+        };
+    }
+
     // 1. Try built-in tools first
     let builtin_names = ["read_file","write_file","list_files","search_files",
         "search_in_files","get_file_info","list_directory_tree","create_directory",

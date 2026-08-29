@@ -89,6 +89,9 @@ fn collect_pages(root: &Path, dir: &Path, out: &mut Vec<String>) {
     }
 }
 
+/// Exact-substring search. High precision and zero setup, but it cannot find a page about
+/// "sibling DOB" from a query about "my sister's birthday" — that is what the semantic pass
+/// in `wiki_search` is for.
 pub fn wiki_search(args: &Value) -> String {
     let query = match args["query"].as_str() {
         Some(q) if !q.trim().is_empty() => q.to_lowercase(),
@@ -103,6 +106,57 @@ pub fn wiki_search(args: &Value) -> String {
         return format!("No wiki pages match '{query}'.");
     }
     format!("Search results for '{query}':\n\n{}", results.join("\n---\n"))
+}
+
+/// How many semantically related pages to add beyond the exact matches. Enough to rescue a
+/// missed recall, few enough that the model isn't handed half the wiki.
+const SEMANTIC_LIMIT: usize = 5;
+
+/// Hybrid search: exact matches first, then pages that are merely *about* the same thing.
+///
+/// The two passes answer different questions and neither subsumes the other. Substring
+/// matching is precise and finds nothing when the wording differs; embeddings find the right
+/// page from different words but will happily rank a loosely-related one. Running both, with
+/// the exact hits first, keeps the precision and adds the recall.
+///
+/// Falls back to lexical-only whenever the semantic pass cannot run — no embedding model
+/// installed, Ollama unreachable, a corrupt index. Memory search must never fail outright.
+pub async fn wiki_search_hybrid(args: &Value, backend: &crate::ollama::Backend) -> String {
+    let lexical = wiki_search(args);
+    let Some(query) = args["query"].as_str().map(str::trim).filter(|q| !q.is_empty()) else {
+        return lexical;
+    };
+
+    let hits = match crate::wiki_index::semantic_search(backend, query, SEMANTIC_LIMIT).await {
+        Ok(Some(hits)) => hits,
+        // Ok(None) = no embedding model installed; Err = it exists but failed. Either way the
+        // lexical result is still a valid answer, so return it rather than surfacing an error.
+        _ => return lexical,
+    };
+    if hits.is_empty() {
+        return lexical;
+    }
+
+    // Don't repeat a page the exact pass already returned.
+    let already = |path: &str| lexical.contains(&format!("**{path}**"));
+    let extra: Vec<String> = hits
+        .iter()
+        .filter(|h| !already(&h.path))
+        .map(|h| {
+            let label = if h.heading.is_empty() { h.path.clone() } else { format!("{} — {}", h.path, h.heading) };
+            format!("**{}**\n  > {}", label, h.snippet)
+        })
+        .collect();
+    if extra.is_empty() {
+        return lexical;
+    }
+
+    let header = if lexical.starts_with("No wiki pages match") {
+        format!("No page contains '{query}' word-for-word, but these are about it:")
+    } else {
+        "Also related (matched by meaning, not wording):".to_string()
+    };
+    format!("{lexical}\n\n{header}\n\n{}", extra.join("\n---\n"))
 }
 
 fn search_pages(root: &Path, dir: &Path, query: &str, out: &mut Vec<String>) {

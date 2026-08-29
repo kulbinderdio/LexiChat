@@ -8,6 +8,7 @@ mod jobs;
 mod job_designer;
 mod history;
 mod wiki;
+mod wiki_index;
 mod skills;
 mod image_gen;
 mod usage;
