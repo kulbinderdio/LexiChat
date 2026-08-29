@@ -195,6 +195,20 @@ pub fn pick_embed_model(models: &[String]) -> Option<String> {
     models.iter().find(|m| m.contains("embed")).cloned()
 }
 
+/// Which model to embed with, given what the index was last built with and what Ollama has
+/// installed now.
+///
+/// Sticking with the indexed model matters because switching invalidates every vector: the
+/// index is rebuilt from scratch, which on a large wiki is a visible pause. So a model that
+/// already built the index keeps the job for as long as it is installed, even if something
+/// higher up the preference list appears later. Only if it has gone do we choose afresh.
+pub fn resolve_embed_model(indexed: &str, installed: &[String]) -> Option<String> {
+    if !indexed.is_empty() && installed.iter().any(|m| m == indexed) {
+        return Some(indexed.to_string());
+    }
+    pick_embed_model(installed)
+}
+
 // ── Ollama embeddings ─────────────────────────────────────────────────────────
 
 /// Embed a batch of texts via Ollama's `/api/embed`.
@@ -343,11 +357,11 @@ fn snippet(text: &str) -> String {
 /// also non-fatal to the caller but worth distinguishing.
 pub async fn semantic_search(backend: &Backend, query: &str, limit: usize) -> anyhow::Result<Option<Vec<Hit>>> {
     let models = crate::ollama::list_models(backend).await.unwrap_or_default();
-    let Some(model) = pick_embed_model(&models) else {
+    let mut index = load_index();
+    let Some(model) = resolve_embed_model(&index.model, &models) else {
         return Ok(None);
     };
 
-    let mut index = load_index();
     let embedded = refresh_index(backend, &model, &mut index).await?;
     if embedded > 0 {
         save_index(&index);
@@ -643,6 +657,34 @@ mod tests {
         // A corrupt index entry must yield no edge rather than a meaningless one.
         assert!(centroid(&[]).is_empty());
         assert!(centroid(&[vec![1.0, 2.0], vec![3.0]]).is_empty());
+    }
+
+    #[test]
+    fn an_indexed_model_keeps_the_job_while_it_is_installed() {
+        // mxbai outranks nothing here, but the point is the reverse: even though
+        // nomic sits higher in the preference list, an index built with mxbai must not
+        // be thrown away just because a "better" model is also present.
+        let installed = vec!["nomic-embed-text:latest".to_string(), "mxbai-embed-large:latest".to_string()];
+        assert_eq!(resolve_embed_model("mxbai-embed-large:latest", &installed).as_deref(),
+                   Some("mxbai-embed-large:latest"));
+    }
+
+    #[test]
+    fn an_uninstalled_model_falls_back_and_forces_a_rebuild() {
+        let installed = vec!["nomic-embed-text:latest".to_string()];
+        assert_eq!(resolve_embed_model("mxbai-embed-large:latest", &installed).as_deref(),
+                   Some("nomic-embed-text:latest"));
+    }
+
+    #[test]
+    fn a_fresh_index_picks_by_preference() {
+        let installed = vec!["all-minilm:latest".to_string(), "nomic-embed-text:latest".to_string()];
+        assert_eq!(resolve_embed_model("", &installed).as_deref(), Some("nomic-embed-text:latest"));
+    }
+
+    #[test]
+    fn nothing_installed_means_no_semantic_pass_even_with_a_stale_index() {
+        assert_eq!(resolve_embed_model("nomic-embed-text:latest", &["llama3:latest".to_string()]), None);
     }
 
     #[test]
