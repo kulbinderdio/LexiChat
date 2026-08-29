@@ -67,6 +67,7 @@ tailwind.config = {
       <a href="#files" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Where the files live</a>
       <a href="#behaviour" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">What it does on its own</a>
       <a href="#recall" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">How it finds things</a>
+      <a href="#map" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Seeing it all at once</a>
       <a href="#tools" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">The wiki tools</a>
       <a href="#cost" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">What it costs</a>
       <a href="#privacy" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Privacy &amp; portability</a>
@@ -252,6 +253,31 @@ tailwind.config = {
         <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">check_circle</span> Entirely disposable. Delete it and the next search rebuilds it; nothing you wrote lives only there.</li>
         <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">check_circle</span> Rebuilt from scratch if you change embedding model, since positions from two different models can't be compared.</li>
       </ul>
+    </section>
+
+    <!-- Memory Map -->
+    <section id="map" class="mb-12">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">hub</span> Seeing it all at once
+      </h2>
+      <p class="text-slate-600 mb-5">Memory that only surfaces when you ask about it is hard to trust. The <strong>Memory Map</strong> — the 🧠 button in the toolbar — draws the whole wiki, so you can see what LexiChat has kept about you without asking it a single question.</p>
+      <figure class="mb-5"><img src="../resources/wiki_graph.png" alt="The Memory Map showing nine wiki pages as coloured circles joined by grey link lines and thicker indigo relatedness lines, with a legend and a relatedness slider" class="w-full shot" loading="lazy"/></figure>
+      <p class="text-slate-600 mb-4">Every page is a circle, coloured by its folder and sized by how much is written on it. Two kinds of line connect them, and the difference is the point:</p>
+      <div class="grid sm:grid-cols-2 gap-4 mb-5">
+        <div class="bg-white border border-slate-200 rounded-xl p-4">
+          <div class="font-semibold text-sm mb-1">Grey — links you wrote</div>
+          <div class="text-sm text-slate-500">An actual link from one page to another. Structure you put there deliberately.</div>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4">
+          <div class="font-semibold text-sm mb-1">Indigo — pages about the same thing</div>
+          <div class="text-sm text-slate-500">Drawn from the same index that powers search. The thicker the line, the more alike the pages — nothing had to be written down for it to appear.</div>
+        </div>
+      </div>
+      <p class="text-slate-600 mb-4">Click any page to read it alongside the map, with its closest relatives listed and scored so you can walk from one to the next. Drag pages around, scroll to zoom, and pull the <strong>Relatedness</strong> slider down to reveal looser connections or up to keep only the strong ones.</p>
+      <div class="bg-blue-50 border border-blue-100 rounded-xl p-4 text-sm text-slate-700">
+        <strong>The thickest line is usually worth acting on.</strong> Two pages that are almost identical are normally the same subject written down twice — the map is the quickest way to spot that and merge them. It also shows the opposite: a page nothing links to, sitting off on its own.
+      </div>
+      <p class="text-slate-500 text-sm mt-4">Without an embedding model the map still draws your written links; the indigo lines simply aren't there. The 🧠 button only appears for profiles that have memory switched on.</p>
     </section>
 
     <!-- Tools -->
