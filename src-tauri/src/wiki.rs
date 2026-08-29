@@ -5,7 +5,25 @@ use serde::Serialize;
 
 // ── Wiki directory ────────────────────────────────────────────────────────────
 
+/// Per-thread redirect used only by tests. Rust runs each `#[test]` on its own thread, so a
+/// thread-local gives every test its own wiki without them racing — which an env var or a
+/// global would not. Without it the tests write into, and delete from, the user's real wiki.
+#[cfg(test)]
+thread_local! {
+    static TEST_WIKI_DIR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_wiki_dir(dir: Option<PathBuf>) {
+    TEST_WIKI_DIR.with(|d| *d.borrow_mut() = dir);
+}
+
 pub fn wiki_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(dir) = TEST_WIKI_DIR.with(|d| d.borrow().clone()) {
+        let _ = fs::create_dir_all(&dir);
+        return dir;
+    }
     let base = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("lexichat")
@@ -672,83 +690,110 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// Run `f` against a throwaway wiki.
+    ///
+    /// This used to create a TempDir and then never use it, so every wiki test read from and
+    /// wrote to the user's real wiki — leaving `_test_*` pages behind, appending to their
+    /// log.md, and in one case deleting their index.md and restoring it from memory. The
+    /// redirect is now actually installed, and cleared afterwards even if the test panics.
     fn with_wiki_dir(f: impl FnOnce(&TempDir)) {
+        struct Guard;
+        impl Drop for Guard {
+            fn drop(&mut self) { set_test_wiki_dir(None); }
+        }
         let tmp = TempDir::new().unwrap();
-        // Override the wiki dir for tests by writing directly to tmp path
+        set_test_wiki_dir(Some(tmp.path().to_path_buf()));
+        let _guard = Guard;
         f(&tmp);
+    }
+
+    /// The isolation itself, pinned. If this fails, every other test in this module is
+    /// quietly operating on the user's real wiki again.
+    #[test]
+    fn tests_never_touch_the_real_wiki() {
+        let real = {
+            set_test_wiki_dir(None);
+            wiki_dir()
+        };
+        with_wiki_dir(|tmp| {
+            assert_eq!(wiki_dir(), tmp.path(), "wiki_dir must resolve to the temp wiki");
+            assert_ne!(wiki_dir(), real, "wiki_dir must not be the user's wiki");
+            let _ = wiki_write(&serde_json::json!({ "path": "canary", "content": "x" }));
+            assert!(tmp.path().join("canary.md").exists());
+            assert!(!real.join("canary.md").exists(), "wrote outside the temp wiki");
+        });
+        // …and the redirect is torn down afterwards.
+        assert_eq!(wiki_dir(), real);
     }
 
     #[test]
     fn resolve_adds_md_extension() {
-        // resolve() uses wiki_dir() which uses dirs::data_local_dir() —
-        // we test only the path manipulation logic indirectly here.
-        let dir = wiki_dir();
-        let p = dir.join("test");
-        let mut with_ext = p.clone();
-        with_ext.set_extension("md");
-        assert_eq!(with_ext.extension().unwrap(), "md");
+        with_wiki_dir(|_| {
+            let p = wiki_dir().join("test");
+            let mut with_ext = p.clone();
+            with_ext.set_extension("md");
+            assert_eq!(with_ext.extension().unwrap(), "md");
+        });
     }
 
     #[test]
     fn wiki_write_and_read_roundtrip() {
-        with_wiki_dir(|_tmp| {
-            let args_w = serde_json::json!({ "path": "_test_roundtrip", "content": "# Hello\nworld" });
-            let result = wiki_write(&args_w);
+        with_wiki_dir(|_| {
+            let result = wiki_write(&serde_json::json!({ "path": "roundtrip", "content": "# Hello\nworld" }));
             assert!(result.contains("Written"), "write failed: {result}");
-
-            let args_r = serde_json::json!({ "path": "_test_roundtrip" });
-            let content = wiki_read(&args_r);
+            let content = wiki_read(&serde_json::json!({ "path": "roundtrip" }));
             assert!(content.contains("Hello"), "read failed: {content}");
-
-            // Cleanup
-            let _ = fs::remove_file(wiki_dir().join("_test_roundtrip.md"));
         });
     }
 
     #[test]
     fn wiki_patch_updates_content() {
-        with_wiki_dir(|_tmp| {
-            let path = "_test_patch";
+        with_wiki_dir(|_| {
+            let path = "patch";
             let _ = wiki_write(&serde_json::json!({ "path": path, "content": "old text here" }));
             let result = wiki_patch(&serde_json::json!({ "path": path, "find": "old text", "replace": "new text" }));
             assert!(result.contains("Patched"), "patch failed: {result}");
             let content = wiki_read(&serde_json::json!({ "path": path }));
             assert!(content.contains("new text"), "content not updated: {content}");
             assert!(!content.contains("old text"), "old text still present");
-            let _ = fs::remove_file(wiki_dir().join(format!("{path}.md")));
         });
     }
 
     #[test]
     fn wiki_patch_reports_not_found() {
-        let result = wiki_patch(&serde_json::json!({ "path": "_nonexistent_xyz", "find": "x", "replace": "y" }));
-        assert!(result.contains("not found"), "expected not-found: {result}");
+        with_wiki_dir(|_| {
+            let result = wiki_patch(&serde_json::json!({ "path": "nonexistent", "find": "x", "replace": "y" }));
+            assert!(result.contains("not found"), "expected not-found: {result}");
+        });
     }
 
     #[test]
     fn wiki_read_missing_page() {
-        let result = wiki_read(&serde_json::json!({ "path": "_surely_missing_xyz_abc" }));
-        assert!(result.contains("not found"), "expected not-found: {result}");
+        with_wiki_dir(|_| {
+            let result = wiki_read(&serde_json::json!({ "path": "surely_missing" }));
+            assert!(result.contains("not found"), "expected not-found: {result}");
+        });
     }
 
     #[test]
     fn wiki_search_finds_content() {
-        let path = "_test_search";
-        let _ = wiki_write(&serde_json::json!({ "path": path, "content": "# Alice\nBirthday: 14th March" }));
-        let result = wiki_search(&serde_json::json!({ "query": "birthday" }));
-        assert!(result.to_lowercase().contains("birthday") || result.contains("_test_search"),
-            "search failed: {result}");
-        let _ = fs::remove_file(wiki_dir().join(format!("{path}.md")));
+        with_wiki_dir(|_| {
+            let _ = wiki_write(&serde_json::json!({ "path": "search", "content": "# Alice\nBirthday: 14th March" }));
+            let result = wiki_search(&serde_json::json!({ "query": "birthday" }));
+            assert!(result.to_lowercase().contains("birthday"), "search failed: {result}");
+        });
     }
 
     #[test]
     fn wiki_delete_removes_page() {
-        let path = "_test_delete";
-        let _ = wiki_write(&serde_json::json!({ "path": path, "content": "to delete" }));
-        let result = wiki_delete(&serde_json::json!({ "path": path }));
-        assert!(result.contains("Deleted"), "delete failed: {result}");
-        let read = wiki_read(&serde_json::json!({ "path": path }));
-        assert!(read.contains("not found"), "page still exists after delete");
+        with_wiki_dir(|_| {
+            let path = "to_delete";
+            let _ = wiki_write(&serde_json::json!({ "path": path, "content": "to delete" }));
+            let result = wiki_delete(&serde_json::json!({ "path": path }));
+            assert!(result.contains("Deleted"), "delete failed: {result}");
+            let read = wiki_read(&serde_json::json!({ "path": path }));
+            assert!(read.contains("not found"), "page still exists after delete");
+        });
     }
 
     #[test]
@@ -759,55 +804,91 @@ mod tests {
 
     #[test]
     fn wiki_append_creates_and_grows() {
-        let path = "_test_append";
-        // Start fresh
-        let _ = wiki_delete(&serde_json::json!({ "path": path }));
-
-        let r1 = wiki_append(&serde_json::json!({ "path": path, "content": "line one" }));
-        assert!(r1.contains("Appended"), "first append failed: {r1}");
-
-        let r2 = wiki_append(&serde_json::json!({ "path": path, "content": "line two" }));
-        assert!(r2.contains("Appended"), "second append failed: {r2}");
-
-        let content = wiki_read(&serde_json::json!({ "path": path }));
-        assert!(content.contains("line one"), "first line missing: {content}");
-        assert!(content.contains("line two"), "second line missing: {content}");
-
-        let _ = fs::remove_file(wiki_dir().join(format!("{path}.md")));
+        with_wiki_dir(|_| {
+            let path = "append";
+            let r1 = wiki_append(&serde_json::json!({ "path": path, "content": "line one" }));
+            assert!(r1.contains("Appended"), "first append failed: {r1}");
+            let r2 = wiki_append(&serde_json::json!({ "path": path, "content": "line two" }));
+            assert!(r2.contains("Appended"), "second append failed: {r2}");
+            let content = wiki_read(&serde_json::json!({ "path": path }));
+            assert!(content.contains("line one"), "first line missing: {content}");
+            assert!(content.contains("line two"), "second line missing: {content}");
+        });
     }
 
     #[test]
     fn wiki_lint_reports_empty_wiki() {
-        // With a clean wiki dir this should not panic; just returns a string.
-        let result = wiki_lint();
-        // Either "empty" or a health report — both are valid strings.
-        assert!(!result.is_empty(), "lint returned empty string");
+        with_wiki_dir(|_| {
+            let result = wiki_lint();
+            assert!(!result.is_empty(), "lint returned empty string");
+        });
     }
 
     #[test]
     fn wiki_lint_detects_page_missing_from_index() {
-        // Write a content page but no index.md
-        let page = "_lint_test_orphan";
-        let _ = wiki_write(&serde_json::json!({ "path": page, "content": "# Orphan page" }));
-        // Delete index.md if it exists so we get a clean test
-        let index_path = wiki_dir().join("index.md");
-        let had_index = index_path.exists();
-        let index_backup = if had_index { fs::read_to_string(&index_path).ok() } else { None };
-        let _ = fs::remove_file(&index_path);
+        // Previously this deleted the user's real index.md and restored it from a backup —
+        // a panic in between would have lost it. On a temp wiki there is simply no index.
+        with_wiki_dir(|_| {
+            let _ = wiki_write(&serde_json::json!({ "path": "orphan", "content": "# Orphan page" }));
+            let result = wiki_lint();
+            assert!(result.contains("index.md"), "lint should flag the missing index: {result}");
+        });
+    }
 
-        let result = wiki_lint();
-        // Should mention the missing index or orphaned pages
-        assert!(
-            result.contains("index.md") || result.contains("No issues"),
-            "lint output unexpected: {result}"
-        );
+    // ── Graph ─────────────────────────────────────────────────────────────────
 
-        // Cleanup
-        let _ = fs::remove_file(wiki_dir().join(format!("{page}.md")));
-        if let Some(backup) = index_backup {
-            let _ = fs::write(&index_path, backup);
-        }
+    #[test]
+    fn links_are_parsed_in_both_spellings() {
+        let md = "See [Alice](people/alice.md) and [[projects/bionic]] and [Ext](https://x.com).";
+        assert_eq!(parse_links(md), vec!["people/alice.md", "projects/bionic.md"]);
+    }
+
+    #[test]
+    fn link_targets_are_normalised() {
+        // A missing .md, a leading ./ and a trailing anchor all point at the same page.
+        assert_eq!(parse_links("[a](./people/alice) [b](people/alice.md#birthday)"),
+                   vec!["people/alice.md"]);
+    }
+
+    #[test]
+    fn the_graph_only_links_pages_that_exist() {
+        with_wiki_dir(|_| {
+            let _ = wiki_write(&serde_json::json!({ "path": "index", "content":
+                "# Index\n- [Real](real.md)\n- [Gone](missing.md)" }));
+            let _ = wiki_write(&serde_json::json!({ "path": "real", "content": "# Real page" }));
+            let g = wiki_graph(0.6);
+            let paths: Vec<&str> = g.nodes.iter().map(|n| n.path.as_str()).collect();
+            assert!(paths.contains(&"index.md") && paths.contains(&"real.md"));
+            // Writing also touches log.md, so assert on what is absent rather than a count.
+            assert!(!paths.contains(&"missing.md"), "a broken link must not invent a node");
+            // The dangling link is wiki_lint's business, not a phantom edge here.
+            assert_eq!(g.links.len(), 1);
+            assert_eq!(g.links[0].to, "real.md");
+        });
+    }
+
+    #[test]
+    fn a_node_takes_its_title_from_the_first_heading() {
+        with_wiki_dir(|_| {
+            let _ = wiki_write(&serde_json::json!({ "path": "some_page", "content": "intro\n## Real Title\nbody" }));
+            let _ = wiki_write(&serde_json::json!({ "path": "no_heading", "content": "just body text" }));
+            let g = wiki_graph(0.6);
+            let title = |p: &str| g.nodes.iter().find(|n| n.path == p).unwrap().title.clone();
+            assert_eq!(title("some_page.md"), "Real Title");
+            // No heading: fall back to a readable filename rather than showing nothing.
+            assert_eq!(title("no_heading.md"), "no heading");
+        });
+    }
+
+    #[test]
+    fn nodes_carry_their_folder_for_colouring() {
+        with_wiki_dir(|_| {
+            let _ = wiki_write(&serde_json::json!({ "path": "people/alice", "content": "# Alice" }));
+            let _ = wiki_write(&serde_json::json!({ "path": "root_page", "content": "# Root" }));
+            let g = wiki_graph(0.6);
+            let folder = |p: &str| g.nodes.iter().find(|n| n.path == p).unwrap().folder.clone();
+            assert_eq!(folder("people/alice.md"), "people");
+            assert_eq!(folder("root_page.md"), "", "a root page has no folder, not a fake one");
+        });
     }
 }
-
-
