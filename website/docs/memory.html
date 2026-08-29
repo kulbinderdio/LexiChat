@@ -66,6 +66,7 @@ tailwind.config = {
       <a href="#turning-on" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Turning it on</a>
       <a href="#files" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Where the files live</a>
       <a href="#behaviour" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">What it does on its own</a>
+      <a href="#recall" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">How it finds things</a>
       <a href="#tools" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">The wiki tools</a>
       <a href="#cost" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">What it costs</a>
       <a href="#privacy" class="block text-sm text-slate-600 hover:text-accent py-1 transition-colors">Privacy &amp; portability</a>
@@ -222,6 +223,37 @@ tailwind.config = {
       </div>
     </section>
 
+    <!-- Recall -->
+    <section id="recall" class="mb-12">
+      <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span class="material-symbols-outlined text-accent">travel_explore</span> How it finds things
+      </h2>
+      <p class="text-slate-600 mb-4">A memory you can't retrieve isn't a memory. Searching the wiki runs <strong>two passes</strong>, because the obvious approach on its own quietly loses things.</p>
+      <div class="grid sm:grid-cols-2 gap-4 mb-5">
+        <div class="bg-white border border-slate-200 rounded-xl p-4">
+          <div class="font-semibold text-sm mb-1">By wording</div>
+          <div class="text-sm text-slate-500">Exact text matching. Precise, instant, and needs nothing installed — but it finds a page about “sibling DOB” only if you happen to ask in those words.</div>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4">
+          <div class="font-semibold text-sm mb-1">By meaning</div>
+          <div class="text-sm text-slate-500">The same question compared against what each page is <em>about</em>, so “my sister's birthday” finds that page anyway. Related results are listed under the exact ones, labelled as such.</div>
+        </div>
+      </div>
+      <p class="text-slate-600 mb-4">Meaning-based search needs an <strong>embedding model</strong> — a small model that turns text into a position in meaning-space. If you have one installed in Ollama, LexiChat finds it and uses it automatically. If you don't, search stays exact and nothing breaks or complains.</p>
+      <div class="bg-slate-50 border border-slate-200 rounded-xl p-4 text-sm text-slate-600 mb-5">
+        To switch it on, pull one model — nothing else to configure:
+        <div class="prose-code mt-2 text-slate-800">ollama pull nomic-embed-text</div>
+      </div>
+      <p class="text-slate-600 mb-4">Everything stays local. Pages are sent to <em>your own</em> Ollama to be indexed, exactly like a chat message — no third-party embedding service is involved at any point.</p>
+      <h3 class="font-semibold text-slate-800 mb-2">The index</h3>
+      <ul class="space-y-2 text-sm text-slate-600">
+        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">check_circle</span> Built the first time you search and kept up to date after that. Only pages you've actually edited are re-read, so the first search costs a second or two and later ones are quick.</li>
+        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">check_circle</span> Stored <strong>outside</strong> the wiki folder, in LexiChat's data folder. Your Markdown stays yours — no machine files mixed in with it.</li>
+        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">check_circle</span> Entirely disposable. Delete it and the next search rebuilds it; nothing you wrote lives only there.</li>
+        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">check_circle</span> Rebuilt from scratch if you change embedding model, since positions from two different models can't be compared.</li>
+      </ul>
+    </section>
+
     <!-- Tools -->
     <section id="tools" class="mb-12">
       <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
@@ -235,7 +267,7 @@ tailwind.config = {
             <th class="text-left px-4 py-3 font-semibold text-slate-700">What it does</th>
           </tr></thead>
           <tbody class="divide-y divide-slate-100">
-            <tr><td class="px-4 py-3 prose-code">wiki_search</td><td class="px-4 py-3 text-slate-600">Find pages matching keywords. The usual first step.</td></tr>
+            <tr><td class="px-4 py-3 prose-code">wiki_search</td><td class="px-4 py-3 text-slate-600">Find pages, by wording and by meaning. The usual first step — see <a href="#recall" class="text-accent hover:underline">How it finds things</a>.</td></tr>
             <tr><td class="px-4 py-3 prose-code">wiki_read</td><td class="px-4 py-3 text-slate-600">Read a page back in full.</td></tr>
             <tr><td class="px-4 py-3 prose-code">wiki_list</td><td class="px-4 py-3 text-slate-600">List every page in the wiki.</td></tr>
             <tr><td class="px-4 py-3 prose-code">wiki_write</td><td class="px-4 py-3 text-slate-600">Create a page, or replace one outright.</td></tr>
@@ -261,6 +293,9 @@ tailwind.config = {
         <li class="flex items-start gap-2"><span class="material-symbols-outlined text-accent text-base flex-shrink-0 mt-0.5">check_circle</span>Prefer <a href="#context-vars" class="text-accent hover:underline">context variables</a> for the handful of facts that are always true — a few tokens each, and no searching.</li>
       </ul>
       <p class="text-slate-500 text-sm mt-4">The Debug panel breaks down exactly what each step is carrying, so you can see the cost rather than guess at it.</p>
+      <h3 class="font-semibold text-slate-800 mb-2 mt-6">Meaning-based search, separately</h3>
+      <p class="text-slate-600 mb-3">The <a href="#recall" class="text-accent hover:underline">second search pass</a> costs nothing in context — it runs before the model is asked anything, and only the handful of results it returns are ever shown. What it does cost is a small model on disk (a few hundred megabytes), a second or two the first time you search after editing pages, and an index file that scales with how much you've written.</p>
+      <p class="text-slate-500 text-sm">If you'd rather not have any of that, don't install an embedding model. Search stays exact and everything else works the same.</p>
     </section>
 
     <!-- Privacy -->
