@@ -582,6 +582,42 @@ fn is_tools_unsupported_error(msg: &str) -> bool {
     unsupported && (m.contains("tool") || m.contains("function call"))
 }
 
+/// Shortest and longest repeating unit worth looking for, and how many consecutive
+/// repeats count as degeneration rather than legitimate structure. Five identical blocks
+/// in a row is well past anything a list or a table produces.
+const REPEAT_MIN_PERIOD: usize = 6;
+const REPEAT_MAX_PERIOD: usize = 160;
+const REPEAT_MIN_TIMES:  usize = 5;
+
+/// Detect a model that has started repeating itself, returning the repeating unit.
+///
+/// Small local models sometimes lock into a loop mid-response — one observed run emitted
+/// "AI SENSI DELL'ART. 1, CO. 668" several hundred times and streamed for over twenty
+/// minutes. Every runaway guard in `agent_loop` is checked at the top of a step, so a
+/// response that never finishes is never checked at all; this is the only thing watching
+/// inside a single generation.
+///
+/// Works on the tail only, so cost does not grow with the length of the response.
+pub(crate) fn runaway_repetition(text: &str) -> Option<String> {
+    // Reversed tail: index 0 is the last character, so a repeating suffix becomes a
+    // periodic prefix and can be checked with a modulo.
+    let tail: Vec<char> = text.chars().rev().take(REPEAT_MAX_PERIOD * REPEAT_MIN_TIMES).collect();
+    for period in REPEAT_MIN_PERIOD..=REPEAT_MAX_PERIOD {
+        let span = period * REPEAT_MIN_TIMES;
+        if span > tail.len() {
+            break;
+        }
+        if (period..span).all(|i| tail[i] == tail[i % period]) {
+            let unit: String = tail[..period].iter().rev().collect();
+            // Runs of whitespace, dashes or dots are formatting, not degeneration.
+            if unit.chars().any(char::is_alphanumeric) {
+                return Some(unit);
+            }
+        }
+    }
+    None
+}
+
 /// Stream one LLM turn. Returns (full_text, tool_calls).
 /// When `silent` is true all `app.emit` calls are skipped (used by background jobs).
 async fn stream_chat<R: tauri::Runtime>(
@@ -594,6 +630,9 @@ async fn stream_chat<R: tauri::Runtime>(
     app: &AppHandle<R>,
     silent: bool,
     cancel: Option<&std::sync::atomic::AtomicBool>,
+    // Hard stop for this turn. Checked per chunk, because the step-level budget in
+    // `agent_loop` cannot fire while a single response is still streaming.
+    deadline: Option<std::time::Instant>,
 ) -> anyhow::Result<(String, Vec<WireToolCall>)> {
     let client = reqwest::Client::builder()
         // Only time out the initial TCP connection — not the streaming duration.
@@ -625,6 +664,10 @@ async fn stream_chat<R: tauri::Runtime>(
 
     let openai = backend.is_openai();
     let mut full_text = String::new();
+    // Degeneration is checked every N characters of growth rather than every token: a loop
+    // needs hundreds of characters to establish, so per-token checking buys nothing.
+    let repeat_check_every: usize = 256;
+    let mut next_repeat_check: usize = 512;
     let mut tool_calls: Vec<WireToolCall> = Vec::new();
     let mut oai_calls: Vec<OaiPartialCall> = Vec::new();
     // Line buffer: SSE/NDJSON events can be split across network chunks, so hold the trailing
@@ -639,6 +682,30 @@ async fn stream_chat<R: tauri::Runtime>(
         // the backend to abort generation rather than finish a reply we're about to discard.
         if let Some(c) = cancel {
             if c.load(std::sync::atomic::Ordering::SeqCst) { break; }
+        }
+        // The turn's wall-clock budget, enforced mid-stream. Without this a model that never
+        // stops generating is never checked, because the step never ends.
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            if !silent {
+                let _ = app.emit("agent-token", TokenEvent {
+                    delta: "\n\n[Stopped: this turn ran out of time while the model was still generating.]".into(),
+                });
+            }
+            break;
+        }
+        // Degeneration check. Only run once per `repeat_check_every` characters of growth —
+        // per token it would be wasteful, and a loop takes far longer than that to establish.
+        if full_text.len() >= next_repeat_check {
+            next_repeat_check = full_text.len() + repeat_check_every;
+            if let Some(unit) = runaway_repetition(&full_text) {
+                let shown: String = unit.chars().take(40).collect();
+                if !silent {
+                    let _ = app.emit("agent-token", TokenEvent {
+                        delta: format!("\n\n[Stopped: the model began repeating \"{shown}\" and was cut off.]"),
+                    });
+                }
+                break;
+            }
         }
         let chunk = match tokio::time::timeout(
             std::time::Duration::from_millis(200), stream.next()).await
@@ -1189,7 +1256,7 @@ async fn ensure_final_answer<R: tauri::Runtime>(
     };
     // No tools this turn — we want prose, not another tool call.
     let no_tools: Vec<ToolSchema> = Vec::new();
-    let streamed = match stream_chat(backend, model, &wire, &no_tools, options, keep_alive, app, false, None).await {
+    let streamed = match stream_chat(backend, model, &wire, &no_tools, options, keep_alive, app, false, None, None).await {
         Ok((text, _)) => !text.trim().is_empty(),
         Err(_) => false,
     };
@@ -1504,10 +1571,15 @@ pub async fn agent_loop<R: tauri::Runtime>(
     // wall-clock climb unbounded (observed: 30 calls / 13 min, and a 65-min map spiral). These
     // bound the WHOLE turn regardless of which tools are used.
     const GLOBAL_TOOL_CALL_CAP: usize = 15; // total tool dispatches across ALL tools this turn
-    // ~10 min. The global tool cap (15) is the primary runaway guard; this wall is a backstop. It's
+    // ~30 min. The global tool cap (15) is the primary runaway guard; this wall is a backstop. It's
     // generous because a legit image deck can spend minutes generating several photoreal images
     // (each ~90s) before building the slides — a tighter wall would cut that off mid-workflow.
-    const TURN_WALL_BUDGET_SECS: u64 = 600;
+    // Raised from 600s: a large-result analysis (e.g. judging ~45 TED tenders from their
+    // descriptions on a local 27B model) legitimately needs 10-20 min of generation AFTER its last
+    // tool call. At 600s such runs were killed mid-sentence, having already decided what to publish
+    // but never emitting the calls to do it — the wall cannot distinguish a spiral from slow work,
+    // so it must sit above the slowest legitimate job, leaving the tool cap to catch real runaways.
+    const TURN_WALL_BUDGET_SECS: u64 = 1800;
     // Once a deliverable artifact (a map/chart/HTML) has been produced, only a little cleanup is
     // allowed before we force the final answer — otherwise the model "refines" it for many minutes
     // (observed: create_artifact, then 3 more run_python calls, still looping at 65 min).
@@ -1729,7 +1801,8 @@ pub async fn agent_loop<R: tauri::Runtime>(
         // persistent failure (or any other error) ends the run.
         let mut attempt = 0usize;
         let (full_text, tool_calls) = loop {
-            match stream_chat(backend, model, &wire, &tools, options.as_ref(), keep_alive.as_deref(), app, silent, Some(cancel.as_ref())).await {
+            match stream_chat(backend, model, &wire, &tools, options.as_ref(), keep_alive.as_deref(), app, silent, Some(cancel.as_ref()),
+                              Some(run_start + std::time::Duration::from_secs(TURN_WALL_BUDGET_SECS))).await {
                 Ok(v) => break v,
                 Err(e) if attempt < MALFORMED_TOOL_CALL_RETRIES
                     && is_malformed_tool_call_error(&e.to_string()) =>
@@ -3490,6 +3563,70 @@ mod tests {
         let second = &bodies.lock().unwrap()[1];
         assert!(second.contains("\"role\":\"tool\""), "history sent in OpenAI tool shape: {second}");
         assert!(second.contains("call_xyz"), "tool_call_id preserved: {second}");
+    }
+
+    // ── Runaway repetition ────────────────────────────────────────────────────
+
+    /// The observed failure: one local model emitted this fragment several hundred times
+    /// and streamed for over twenty minutes, because no guard runs inside a single response.
+    #[test]
+    fn catches_the_repetition_that_hung_a_real_run() {
+        let text = "Matching notices: ".to_string()
+            + &"\"AI SENSI DELL'ART. 1, CO. 668\", ".repeat(12);
+        let unit = runaway_repetition(&text).expect("should have caught the loop");
+        assert!(unit.contains("AI SENSI"), "unit should be the repeating fragment: {unit:?}");
+    }
+
+    #[test]
+    fn ignores_text_that_merely_repeats_a_few_times() {
+        // Four repeats is under the threshold — a table or a list can legitimately do this.
+        let text = "row one | row two | ".repeat(4);
+        assert_eq!(runaway_repetition(&text), None);
+    }
+
+    #[test]
+    fn ignores_formatting_runs() {
+        // Rules, ellipses and indentation repeat constantly in Markdown and are not a loop.
+        assert_eq!(runaway_repetition(&"-".repeat(400)), None);
+        assert_eq!(runaway_repetition(&"          ".repeat(60)), None);
+        assert_eq!(runaway_repetition(&". . . . ".repeat(60)), None);
+    }
+
+    #[test]
+    fn ignores_ordinary_prose_and_short_text() {
+        assert_eq!(runaway_repetition(""), None);
+        assert_eq!(runaway_repetition("A short answer about tenders."), None);
+        let prose = "The notice concerns an artificial intelligence platform for the \
+                     public sector, covering retrieval, agents and audit. ".repeat(3);
+        assert_eq!(runaway_repetition(&prose), None);
+    }
+
+    /// Only the tail matters — a long, healthy answer that degenerates at the very end must
+    /// still be caught, and the preceding text must not mask it.
+    #[test]
+    fn catches_a_loop_that_starts_late_in_a_long_answer() {
+        let good = "Genuine analysis of the tender landscape. ".repeat(40);
+        let text = good + &"stuck stuck stuck ".repeat(20);
+        assert!(runaway_repetition(&text).is_some());
+    }
+
+    /// Cost must not grow with the response, or the check would slow down exactly the runs
+    /// it exists to protect.
+    #[test]
+    fn stays_cheap_on_a_very_long_response() {
+        let text = "Ordinary varied sentence number one. ".repeat(20_000);
+        let start = std::time::Instant::now();
+        let _ = runaway_repetition(&text);
+        assert!(start.elapsed().as_millis() < 50, "tail-only check should be fast");
+    }
+
+    #[test]
+    fn handles_multibyte_text_without_panicking() {
+        // Char-based, not byte-based: a naive slice here would panic mid-codepoint.
+        let text = "Ø£ØªÙ Ø¯Ø±Ø³Ø© ".repeat(30);
+        let _ = runaway_repetition(&text);
+        let mixed = "tender — Ünïcödé ".repeat(30);
+        assert!(runaway_repetition(&mixed).is_some());
     }
 
     #[test]
