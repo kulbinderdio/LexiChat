@@ -739,6 +739,7 @@ async fn send_message(
         args.tool_result_limit.unwrap_or(0), // 0 → default
         &app,
         false, // silent = false for interactive chat
+        false, // allow_code_exec: interactive uses the per-session approval prompt instead
         if args.max_steps == 0 { usize::MAX } else { args.max_steps.max(1) }, // 0 = no limit; else uncapped (loop guards still stop runaways)
         args.web_tool_cap.unwrap_or(0), // 0 → default web-tool cap
         cancel,

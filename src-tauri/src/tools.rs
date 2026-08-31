@@ -1695,6 +1695,52 @@ fn glob_matches(s: &str, pattern: &str) -> bool {
 
 // ── Schema definitions ────────────────────────────────────────────────────────
 
+/// `run_python` is normally supplied by the frontend (Pyodide lives in the webview), so it is
+/// absent from `all_builtin_schemas`. Scheduled jobs build their tool list from the Rust side and
+/// so could never see it — even though `dispatch` has always handled run_python for background
+/// runs (it waits on the webview with its own timeout). This is that schema, offered to a job only
+/// when its `enabled_builtin_tools` asks for it. Deliberately terser than the interactive
+/// description: a job has no attachments, no inline chart rendering and no user to save files for.
+/// The wiki tools are implemented in Rust but their schemas, like `run_python`'s, are supplied by
+/// the frontend — so a scheduled job could never use the wiki at all. These are the read/write
+/// subset a job needs. `wiki_delete` and `wiki_patch` are deliberately absent: an unattended job
+/// should be able to record what it did, not restructure or remove pages.
+pub fn wiki_schemas_for_jobs() -> Vec<serde_json::Value> {
+    vec![
+        schema("wiki_list", "List all pages in the persistent wiki.", vec![], vec![]),
+        schema("wiki_search", "Search wiki pages for a keyword or phrase. Search before writing a \
+                new page, to avoid creating a duplicate.",
+            vec![("query","string","Keyword or phrase to search for.")], vec!["query"]),
+        schema("wiki_read", "Read the full contents of a wiki page.",
+            vec![("path","string","Page path e.g. 'projects/bionic-gpt.md'. The .md extension is optional.")],
+            vec!["path"]),
+        schema("wiki_write", "Create or overwrite a wiki page with markdown content. Overwrites the \
+                whole page — to add to an existing page without losing it, use wiki_append.",
+            vec![("path","string","Page path e.g. 'tenders/2026-08-31.md'."),
+                 ("content","string","Full markdown content of the page.")],
+            vec!["path","content"]),
+        schema("wiki_append", "Append content to the end of a wiki page, keeping what is already \
+                there. Creates the page if it does not exist. Use this for ledgers and logs.",
+            vec![("path","string","Page path e.g. 'tenders/reviewed.md'."),
+                 ("content","string","Content to append.")],
+            vec!["path","content"]),
+    ]
+}
+
+pub fn run_python_schema() -> serde_json::Value {
+    schema(
+        "run_python",
+        "Execute real Python (CPython) in a secure, offline sandbox to compute, filter, aggregate \
+         and reshape data. The standard library plus numpy, pandas, matplotlib, scipy, sympy, \
+         openpyxl and beautifulsoup4 are available; there is NO network access, so do not import \
+         anything else. Use print() for output — printed text is what comes back to you. An \
+         oversized tool result is written to /work/data/<file> and can ONLY be read here, with \
+         normal Python (open(), json.load, pandas). Write files you want to keep to /work/out/.",
+        vec![("code", "string", "The Python source code to execute.")],
+        vec!["code"],
+    )
+}
+
 pub fn all_builtin_schemas() -> Vec<serde_json::Value> {
     vec![
         schema("list_files", "List files and folders at a path on this computer.",
@@ -2084,6 +2130,20 @@ mod tests {
     fn glob_only_stars() {
         assert!(glob_matches("anything", "*"));
         assert!(glob_matches("", "*"));
+    }
+
+    /// run_python is deliberately NOT in all_builtin_schemas (the frontend supplies its own,
+    /// richer version). A job asks for it by name, so the two must agree on that name.
+    #[test]
+    fn run_python_schema_is_valid_and_not_duplicated() {
+        let s = run_python_schema();
+        assert_eq!(s["function"]["name"], "run_python");
+        assert_eq!(s["function"]["parameters"]["required"][0], "code");
+        assert!(s["function"]["parameters"]["properties"]["code"].is_object());
+        assert!(
+            !all_builtin_schemas().iter().any(|b| b["function"]["name"] == "run_python"),
+            "would be offered twice to a job"
+        );
     }
 
     // ── all_builtin_schemas ───────────────────────────────────────────────────

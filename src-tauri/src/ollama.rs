@@ -838,8 +838,9 @@ fn clean_tool_results(dir: &std::path::Path) {
 
 /// Like `cap_tool_result`, but when a result is too big to fit, the FULL result is written to a
 /// file in `dir` and the model is told the path so it can process all of it with `run_python`
-/// (accurate counting/aggregation without blowing the context). Interactive chat only —
-/// background jobs can't run code, so they fall back to plain truncation.
+/// (accurate counting/aggregation without blowing the context). Used only when `run_python` is
+/// actually among this run's tools — otherwise the caller falls back to plain truncation, since
+/// pointing at a file the model cannot open is worse than a short result.
 fn offload_tool_result(result: String, tool_name: &str, limit: usize, dir: &std::path::Path) -> String {
     let limit = if limit == 0 { DEFAULT_TOOL_RESULT_LIMIT } else { limit };
     let total = result.chars().count();
@@ -1453,6 +1454,9 @@ pub async fn agent_loop<R: tauri::Runtime>(
     tool_result_limit: usize,
     app: &AppHandle<R>,
     silent: bool,
+    // A scheduled job that has opted into running code. False for interactive runs, which use
+    // the normal per-session approval prompt instead.
+    allow_code_exec: bool,
     max_steps: usize,
     // Per-turn cap on web_search + fetch_webpage calls (0 → default). A runaway guard; raise it for
     // research/scraping profiles that legitimately fetch many pages.
@@ -1500,8 +1504,17 @@ pub async fn agent_loop<R: tauri::Runtime>(
     let mut narrate_nudges = 0usize;
     const MAX_NARRATE_NUDGES: usize = 2;
     let cap = if tool_cap == 0 { DEFAULT_TOOL_CAP } else { tool_cap };
-    // Oversized tool results are offloaded here for run_python to read (interactive chat only —
-    // jobs can't run code). run_python is given read access to this dir via dispatch_paths.
+    // Whether `run_python` is actually reachable this run. Three things key off it: whether an
+    // oversized result is offloaded to a file at all, whether the offload directory is staged into
+    // the sandbox, and what the truncation notice tells the model to do. All three used to be
+    // keyed off `silent` ("is this a job?"), which was only ever a proxy for "can this run execute
+    // code" — true because jobs had no run_python. Now that a job can be granted it, ask the real
+    // question: a job with code gets the same treatment as chat, and an interactive run with code
+    // tools switched off stops being pointed at a file it cannot open.
+    let code_available = always_tools.iter().chain(tool_groups.iter().flat_map(|g| g.tools.iter()))
+        .any(|t| t.function.name == "run_python");
+    // Oversized tool results are offloaded here for run_python to read. run_python is given read
+    // access to this dir via dispatch_paths — including in a job, when that job may run code.
     // Interactive chats keep working files under the conversation so they survive for as long as
     // the chat does; background jobs (silent) have no conversation and use the swept temp dir.
     let (results_dir, artifacts_dir, ephemeral) = {
@@ -1520,7 +1533,16 @@ pub async fn agent_loop<R: tauri::Runtime>(
     // Skill resources loaded via use_skill are copied here and staged into /work/skills for run_python.
     let skill_staging = skill_staging_dir();
     let dispatch_paths: Vec<String> = if silent {
-        sandbox_paths.clone()
+        // A job with run_python still needs the offload directory staged into /work/data, or the
+        // file the truncation notice names is not there when it looks. Deliberately without the
+        // interactive housekeeping below: the temp dir is shared, and jobs can run concurrently,
+        // so one job must not sweep another's working files out from under it.
+        let mut v = sandbox_paths.clone();
+        if code_available {
+            let _ = std::fs::create_dir_all(&results_dir);
+            v.push(results_dir.to_string_lossy().into_owned());
+        }
+        v
     } else {
         if ephemeral { clean_tool_results(&results_dir); }
         // Fresh turn: reset the per-turn image counter so generated_image_N.png restarts at 1 and
@@ -2034,8 +2056,9 @@ pub async fn agent_loop<R: tauri::Runtime>(
                     .find(|s| s.name.eq_ignore_ascii_case(want) || s.id.eq_ignore_ascii_case(want))
                 {
                     Some(s) => {
-                        // Stage the skill's bundled resources into /work/skills (interactive only —
-                        // jobs can't run code). They land in the staging dir already in dispatch_paths.
+                        // Stage the skill's bundled resources into /work/skills. Interactive only,
+                        // because jobs are passed no skills at all. They land in the staging dir
+                        // already in dispatch_paths.
                         let mut note = String::new();
                         if !silent && !s.resources.is_empty() {
                             let dir = skill_staging_dir();
@@ -2129,7 +2152,7 @@ pub async fn agent_loop<R: tauri::Runtime>(
             let python_reset = name == "run_python" && !python_started;
             if name == "run_python" { python_started = true; }
             // Route: builtin → openapi → sparql → mcp
-            let result = dispatch_tool(name, args, &openapi_specs, &sparql_endpoints, mcp_connections, &allowed_dirs, &dispatch_paths, web_search_results, silent, python_reset, app).await;
+            let result = dispatch_tool(name, args, &openapi_specs, &sparql_endpoints, mcp_connections, &allowed_dirs, &dispatch_paths, web_search_results, silent, python_reset, allow_code_exec, app).await;
 
             // Stop pressed during the tool call (e.g. a long-running run_python) — bail before
             // rendering its result, which could otherwise land in a now-different chat. The
@@ -2155,7 +2178,7 @@ pub async fn agent_loop<R: tauri::Runtime>(
                     (result.clone(), false)
                 }
             } else { (String::new(), false) };
-            let result = if silent || read_for_content {
+            let result = if !code_available || read_for_content {
                 cap_tool_result(result, &name, tool_result_limit)
             } else {
                 offload_tool_result(result, &name, tool_result_limit, &results_dir)
@@ -2276,7 +2299,8 @@ pub async fn call_one_tool<R: tauri::Runtime>(
     app: &AppHandle<R>,
 ) -> String {
     dispatch_tool(name, args, openapi_specs, sparql_endpoints, mcp_connections,
-        allowed_dirs, sandbox_paths, web_search_results, /*silent*/ true, /*python_reset*/ true, app).await
+        allowed_dirs, sandbox_paths, web_search_results, /*silent*/ true, /*python_reset*/ true,
+        /*allow_code_exec*/ false, app).await
 }
 
 /// Order-independent hash of a step's tool calls (name + arguments), used to detect a model that
@@ -2314,11 +2338,13 @@ async fn dispatch_tool<R: tauri::Runtime>(
     silent: bool,
     // Only meaningful for run_python: wipe /work first (true = first call of the turn).
     python_reset: bool,
+    // Only meaningful for run_python in a job: this job may execute code (see its field docs).
+    allow_code_exec: bool,
     app: &AppHandle<R>,
 ) -> String {
     // 0. Code-execution sandbox — gated behind a per-session permission prompt.
     if name == "run_python" {
-        return dispatch_run_python(args, allowed_dirs, sandbox_paths, silent, python_reset, app).await;
+        return dispatch_run_python(args, allowed_dirs, sandbox_paths, silent, allow_code_exec, python_reset, app).await;
     }
 
     // 0b. Model-authored HTML artifact — stashed for the agent loop to render inline (sandboxed
@@ -2706,6 +2732,10 @@ async fn dispatch_run_python<R: tauri::Runtime>(
     _allowed_dirs: &[String],
     sandbox_paths: &[String],
     silent: bool,
+    // Set only by a scheduled job whose own config opts into code execution. Threaded rather
+    // than held in shared state because jobs can run concurrently, and a shared flag would let
+    // one job's permission apply to another's run.
+    allow_code_exec: bool,
     // Wipe /work before running? True only on the first run_python of a turn, so files written by
     // an earlier call this turn (e.g. chart PNGs) persist into later calls.
     reset: bool,
@@ -2716,16 +2746,22 @@ async fn dispatch_run_python<R: tauri::Runtime>(
         return "Error: run_python requires a non-empty 'code' string.".into();
     }
 
-    // Permission gate (session toggle): once approved, stays unlocked until the
-    // app restarts. Background jobs can never prompt, so they require a prior
-    // interactive unlock.
+    // Permission gate (session toggle): once approved, stays unlocked until the app restarts.
+    // A background job can never answer a prompt, so it has exactly two outcomes: its own
+    // `allow_code_exec` opt-in stands in for the approval, or it is refused. It must never reach
+    // the prompt below — nobody is there to answer, so the wait would always end in a denial.
     if let Some(state) = app.try_state::<crate::AppState>() {
         let unlocked = *state.code_exec_unlocked.lock().unwrap();
-        if !unlocked {
-            if silent {
-                return "Error: code execution requires interactive approval and is \
-                        disabled in background jobs.".into();
+        if silent {
+            if !allow_code_exec {
+                return "Error: code execution requires interactive approval and is disabled in \
+                        background jobs. To let THIS job run code, switch on its \
+                        'allow code execution' setting.".into();
             }
+            // Opted in: proceed without prompting, and WITHOUT setting the session-wide unlock —
+            // one job's permission must not silently grant code execution to interactive chat or
+            // to another job that was never opted in.
+        } else if !unlocked {
             let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
             *state.pending_code_permission.lock().unwrap() = Some(tx);
             let _ = app.emit("agent-permission-request", serde_json::json!({ "code": code }));
@@ -3095,6 +3131,7 @@ mod tests {
             0,
             app.handle(),
             false, // interactive chat, as in the failing session
+            false, // allow_code_exec: not a job
             20,
             0, // web_tool_cap: default
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -3238,7 +3275,7 @@ mod tests {
 
         let result = agent_loop(
             &Backend::ollama(server.uri()), "m", "sys", &[], &groups, 5, None, None,
-            &conversation, vec![], vec![], &mcp, vec![], vec![], 10, 0, app.handle(), true, 5,
+            &conversation, vec![], vec![], &mcp, vec![], vec![], 10, 0, app.handle(), true, false, 5,
             0, // web_tool_cap: default
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             false, // discover_tools: exercise the legacy pre-flight path
@@ -3441,7 +3478,7 @@ mod tests {
 
         let result = agent_loop(
             &Backend::ollama(server.uri()), "qwen3.6:latest", "You are a helpful assistant.", &[], &[], 0, None, None,
-            &conversation, vec![], vec![], &mcp, vec![], vec![], 10, 0, app.handle(), false, 20,
+            &conversation, vec![], vec![], &mcp, vec![], vec![], 10, 0, app.handle(), false, false, 20,
             0, // web_tool_cap: default
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             false, // discover_tools: exercise the legacy pre-flight path
@@ -3545,7 +3582,7 @@ mod tests {
             &[tool("get_current_datetime")], // always-on tool, no selection LLM call
             &[], 0, None, None,
             &conversation, vec![], vec![], &mcp, vec![], vec![], 10, 0,
-            app.handle(), false, 20,
+            app.handle(), false, false, 20,
             0, // web_tool_cap: default
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             false, // discover_tools: exercise the legacy pre-flight path
@@ -3682,7 +3719,7 @@ mod tests {
             &[tool("list_files")], // always-on tool → first request carries tools
             &[], 0, None, None,
             &conversation, vec![], vec![], &mcp, vec![], vec![], 10, 0,
-            app.handle(), false, 20,
+            app.handle(), false, false, 20,
             0, // web_tool_cap: default
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             false, // discover_tools: exercise the legacy pre-flight path

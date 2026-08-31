@@ -163,6 +163,7 @@ function blankJob(profile: Profile | null = null): ScheduledJob {
     profile_context: null,
     steps: [],
     catch_up: true,
+    allow_code_exec: false,
   };
 }
 
@@ -451,7 +452,7 @@ function JobsTab({ jobs, models, profiles, globalOpenapiSpecs, globalMcpServers,
         <JobForm job={editingJob} models={models} profiles={profiles}
           globalOpenapiSpecs={globalOpenapiSpecs} globalMcpServers={globalMcpServers}
           globalEnabledTools={globalEnabledTools} globalAllowedDirs={globalAllowedDirs}
-          onSave={onSave} onCancel={onCancel} />
+          onSave={onSave} onCancel={onCancel} error={error} />
       </div>
     );
   }
@@ -764,17 +765,35 @@ function MCPServerToolToggle({ srv, checked, disabledTools, onToggleServer, onTo
   );
 }
 
-function JobForm({ job: initial, models, profiles, globalOpenapiSpecs, globalMcpServers, globalEnabledTools, globalAllowedDirs, onSave, onCancel }: {
+function JobForm({ job: initial, models, profiles, globalOpenapiSpecs, globalMcpServers, globalEnabledTools, globalAllowedDirs, onSave, onCancel, error }: {
   job: ScheduledJob; models: string[]; profiles: Profile[];
   globalOpenapiSpecs: import("./AdminPanel").StoredOpenAPISpec[];
   globalMcpServers: import("./AdminPanel").StoredMCPServer[];
   globalEnabledTools: Record<string, boolean>;
   globalAllowedDirs: string[];
   onSave: (j: ScheduledJob) => void; onCancel: () => void;
+  /** A rejected save. The form stays open on failure, and this is the only branch rendered
+   *  then — without it the Save button just appears to do nothing. */
+  error?: string;
 }) {
   const [job, setJob] = useState<ScheduledJob>({ ...initial, model: initial.model || models[0] || "", steps: initial.steps ?? [] });
   const set = (patch: Partial<ScheduledJob>) => setJob(j => ({ ...j, ...patch }));
   const setSched = (patch: Partial<JobSchedule>) => set({ schedule: { ...job.schedule, ...patch } });
+
+  // Changing the schedule TYPE must produce a complete variant, not a merge. Rust's JobSchedule is
+  // an internally-tagged enum, so Weekly without `weekday` (or Daily without `hour`) fails to
+  // deserialize and save_job rejects the whole job — which looked like a dead Save button.
+  // The number inputs' `?? 9` fallbacks only affect what is displayed; they never reach state
+  // until the field is edited, so the defaults have to be written here.
+  const setSchedType = (type: JobSchedule["type"]) => {
+    const p = job.schedule;
+    const next: JobSchedule =
+      type === "Daily"    ? { type, hour: p.hour ?? 9, minute: p.minute ?? 0 }
+    : type === "Weekly"   ? { type, weekday: p.weekday ?? 0, hour: p.hour ?? 9, minute: p.minute ?? 0 }
+    : type === "Interval" ? { type, hours: p.hours ?? 4 }
+    :                       { type };
+    set({ schedule: next });
+  };
 
   // Step builder mode — auto-detect from initial data
   const [promptMode, setPromptMode] = useState<"freeform" | "steps">(
@@ -986,7 +1005,7 @@ function JobForm({ job: initial, models, profiles, globalOpenapiSpecs, globalMcp
         <label>Schedule</label>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           <select className="admin-input" style={{ width: "auto" }} value={job.schedule.type}
-            onChange={e => setSched({ type: e.target.value as JobSchedule["type"] })}>
+            onChange={e => setSchedType(e.target.value as JobSchedule["type"])}>
             <option value="Daily">Daily</option>
             <option value="Interval">Every N hours</option>
             <option value="Weekly">Weekly</option>
@@ -1126,6 +1145,25 @@ function JobForm({ job: initial, models, profiles, globalOpenapiSpecs, globalMcp
                         </label>
                       ))}
                     </div>
+                    {/* Only meaningful once run_python is on: without this the tool is offered to
+                        the job and then refused on every call, which reads as a broken job. */}
+                    {job.enabled_builtin_tools.includes("run_python") && (
+                      <label style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 12,
+                                      cursor: "pointer", marginTop: 8, paddingTop: 8,
+                                      borderTop: "1px solid var(--border)" }}>
+                        <input type="checkbox" checked={job.allow_code_exec === true}
+                          onChange={e => set({ allow_code_exec: e.target.checked })}
+                          style={{ accentColor: "var(--purple)", marginTop: 2 }} />
+                        <span>
+                          Allow this job to run code
+                          <span style={{ display: "block", fontSize: 10, color: "var(--text-tertiary)" }}>
+                            Required for run_python in a scheduled job — nobody is there to answer the
+                            approval prompt. The job runs model-written Python unattended; the
+                            permission applies to this job only.
+                          </span>
+                        </span>
+                      </label>
+                    )}
                   </ToolSection>
                   {effectiveOpenAPI.length > 0 && (
                     <ToolSection title="OpenAPI / REST services" defaultOpen>
@@ -1173,6 +1211,11 @@ function JobForm({ job: initial, models, profiles, globalOpenapiSpecs, globalMcp
       {/* ── Actions ── */}
       <div style={{ display: "flex", gap: 8, paddingTop: 2 }}>
         <button className="btn" onClick={onCancel}>Cancel</button>
+        {error && (
+          <div style={{ color: "#f87171", fontSize: 12, marginRight: "auto", maxWidth: 460 }}>
+            Could not save: {error}
+          </div>
+        )}
         <button className="btn primary" disabled={!canSave} onClick={handleSave}>Save Job</button>
       </div>
     </div>

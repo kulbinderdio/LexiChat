@@ -231,6 +231,8 @@ fn assemble(spec: DraftSpec, args: &DraftJobArgs) -> Result<DraftedJob, String> 
         profile_context: None,
         steps,
         catch_up: true,
+        // An AI-designed job never grants itself code execution; that stays the user's call.
+        allow_code_exec: false,
     };
 
     Ok(DraftedJob { job, warnings })

@@ -55,6 +55,13 @@ pub struct ScheduledJob {
     /// briefing delivered at 6pm is noise).
     #[serde(default = "default_catch_up")]
     pub catch_up: bool,
+    /// Allow this job to run `run_python`. Code execution is otherwise gated behind an
+    /// interactive approval that a background job can never answer, so without this a job
+    /// given run_python fails on every call. Off by default: switching it on means this job
+    /// may execute model-written Python unattended, so it is opted into per job rather than
+    /// inherited by every job on the machine.
+    #[serde(default)]
+    pub allow_code_exec: bool,
 }
 
 fn default_catch_up() -> bool { true }
@@ -411,6 +418,27 @@ pub async fn execute_job(
         })
         .collect();
 
+    // `run_python` is frontend-provided (Pyodide runs in the webview), so it is not in
+    // `all_builtin_schemas` and a job could never be given it — despite dispatch having always
+    // supported it for background runs. Offer it when the job asks for it, so a scheduled job can
+    // process an offloaded result instead of judging from a truncated one.
+    let wants_python = if use_step_tools { step_tool_names.iter().any(|n| n == "run_python") }
+                       else              { job.enabled_builtin_tools.iter().any(|n| n == "run_python") };
+    if wants_python {
+        if let Ok(t) = serde_json::from_value::<ToolSchema>(crate::tools::run_python_schema()) {
+            all_tools.push(t);
+        }
+    }
+    // Same story for the wiki: implemented in Rust, but schema-less on this side.
+    for v in crate::tools::wiki_schemas_for_jobs() {
+        let Ok(t) = serde_json::from_value::<ToolSchema>(v) else { continue };
+        let wanted = if use_step_tools { step_tool_names.contains(&t.function.name) }
+                     else              { job.enabled_builtin_tools.contains(&t.function.name) };
+        if wanted && !all_tools.iter().any(|e| e.function.name == t.function.name) {
+            all_tools.push(t);
+        }
+    }
+
     // Inject current date/time
     let now_local = chrono::Local::now();
     let date_prefix = format!(
@@ -512,10 +540,10 @@ pub async fn execute_job(
             None, None, &conversation,
             registered_specs, Vec::new(), &temp_mcp, ctx.allowed_dirs.clone(),
             Vec::new(), // no attached-file sandbox paths in jobs
-            10, 0, app, true, 25, 0, // web_search=10, tool_result_limit=default; 25 steps; web_tool_cap=default
+            10, 0, app, true, job.allow_code_exec, 25, 0, // web_search=10, tool_result_limit=default; 25 steps; web_tool_cap=default
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)), // jobs aren't user-cancellable
             false, // discover_tools: jobs keep the deterministic LLM pre-flight
-            Vec::new(), // skills: interactive only (jobs can't run code / show a permission prompt)
+            Vec::new(), // skills: interactive only
         ).await;
         // temp_mcp drops here → MCPConnections drop → kill_on_drop kills stdio processes
         r
@@ -544,7 +572,7 @@ pub async fn execute_job(
             None, None, &conversation,
             specs, Vec::new(), &state.mcp_connections, allowed_dirs,
             Vec::new(), // no attached-file sandbox paths in jobs
-            10, 0, app, true, 25, 0, // web_search=10, tool_result_limit=default; 25 steps; web_tool_cap=default
+            10, 0, app, true, job.allow_code_exec, 25, 0, // web_search=10, tool_result_limit=default; 25 steps; web_tool_cap=default
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)), // jobs aren't user-cancellable
             false, // discover_tools: jobs keep the deterministic LLM pre-flight
             Vec::new(), // skills: interactive only
@@ -656,6 +684,32 @@ pub fn spawn_scheduler(app: tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
+
+    /// Switching a job's schedule type in the UI used to MERGE the new type over the old fields,
+    /// producing e.g. Weekly with a leftover `hours` and no `weekday`. That fails to deserialize,
+    /// so save_job rejected the whole job and the Save button looked dead. Guard both halves.
+    #[test]
+    fn schedule_type_switch_must_carry_its_own_fields() {
+        // What the merging UI produced when going Interval -> Weekly: no weekday/hour/minute.
+        let broken = r#"{"type":"Weekly","hours":336}"#;
+        assert!(serde_json::from_str::<JobSchedule>(broken).is_err(),
+            "a Weekly schedule without weekday must be rejected, not silently accepted");
+
+        // What the fixed UI sends: a complete variant.
+        let fixed = r#"{"type":"Weekly","weekday":5,"hour":7,"minute":0}"#;
+        assert_eq!(
+            serde_json::from_str::<JobSchedule>(fixed).unwrap(),
+            JobSchedule::Weekly { weekday: 5, hour: 7, minute: 0 },
+        );
+
+        // Daily and Interval likewise.
+        assert!(serde_json::from_str::<JobSchedule>(r#"{"type":"Daily"}"#).is_err());
+        assert_eq!(
+            serde_json::from_str::<JobSchedule>(r#"{"type":"Interval","hours":336}"#).unwrap(),
+            JobSchedule::Interval { hours: 336 },
+        );
+    }
+
     use super::*;
     use chrono::{Duration, Local, Datelike, Timelike};
 

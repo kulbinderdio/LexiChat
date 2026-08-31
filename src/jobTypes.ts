@@ -60,6 +60,10 @@ export interface ScheduledJob {
   steps?: JobStep[];
   /** Run a Daily/Weekly slot missed while the machine was asleep. Defaults to true. */
   catch_up?: boolean;
+  /** Let this job run `run_python`. Code execution is otherwise gated behind an interactive
+   *  approval a background job can never answer, so without this a job given run_python fails
+   *  on every call. Off by default: it means model-written Python runs unattended. */
+  allow_code_exec?: boolean;
 }
 
 export interface TraceToolCall {
