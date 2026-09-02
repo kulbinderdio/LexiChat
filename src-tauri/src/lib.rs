@@ -601,14 +601,47 @@ async fn send_message(
         .into_iter()
         .partition(|t| t.function.name.starts_with("wiki_"));
 
-    // Build discoverable tool groups: one for built-ins, then one per OpenAPI spec / SPARQL
-    // endpoint / MCP server. The agent loop narrows these per step when they're numerous.
+    // `generate_image` is a heavy schema (~200 tokens) wanted only when the user actually asks for
+    // a picture, so it is discovered on demand rather than sent on every step of every run.
+    // Two tools were tried here and put back, for the same underlying reason — a tool the model can
+    // ROUTE AROUND must not be gated, because it will:
+    //   * create_artifact — asked for "an HTML page with a bar chart", the model skipped find_tools
+    //     entirely and wrote a file to disk with write_file instead. Gating it did not prompt
+    //     discovery, it prompted avoidance, and the user silently lost the inline artifact.
+    //   * run_python — an offloaded tool result instructs the model to process the file with
+    //     run_python, so it must exist the moment that is read, not a discovery round-trip later.
+    //   * the file-management tools (create_directory, move_file, delete_file, find_old_files) —
+    //     tried and reverted. Asked to create a folder, the model did not call find_tools; it used
+    //     run_python, whose sandbox is /work, so it made the directory inside the VIRTUAL
+    //     filesystem, saw it succeed there, and reported "the folder has been created and
+    //     confirmed to exist" — while nothing appeared on the real disk. run_python is a universal
+    //     substitute for anything file-shaped, and a silently WRONG one, so no file tool can be
+    //     gated while run_python is core. That is strictly worse than avoidance: it fabricates a
+    //     success the user cannot see is false.
+    // generate_image survives this rule because nothing else can produce an image.
+    const ON_DEMAND: &[&str] = &["generate_image"];
+    let (media, core): (Vec<_>, Vec<_>) = discoverable
+        .into_iter()
+        .partition(|t| ON_DEMAND.contains(&t.function.name.as_str()));
+
+    // Build discoverable tool groups: built-ins, the on-demand groups, then one per OpenAPI spec /
+    // SPARQL endpoint / MCP server. The agent loop narrows these per step when they're numerous.
     let mut tool_groups: Vec<ollama::ToolGroup> = Vec::new();
-    if !discoverable.is_empty() {
+    if !core.is_empty() {
         tool_groups.push(ollama::ToolGroup {
             label: "Built-in tools".into(),
-            description: "Files, web search, fetch web pages, date/time, email, and code.".into(),
-            tools: discoverable,
+            description: "Read, list and search files; web search; fetch web pages; date and time; \
+                email; and run code.".into(),
+            tools: core,
+        });
+    }
+    if !media.is_empty() {
+        tool_groups.push(ollama::ToolGroup {
+            // Keyword-rich: this is what find_tools matches against.
+            label: "Image generation".into(),
+            description: "Generate, draw, create or edit an image, picture, photo, illustration or \
+                artwork from a text description.".into(),
+            tools: media,
         });
     }
     for spec in state.openapi_specs.lock().unwrap().iter() {

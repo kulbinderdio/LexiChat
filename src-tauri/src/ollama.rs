@@ -180,6 +180,10 @@ pub struct DebugStepEvent {
     /// Total candidate tools (always-on + all groups) before per-step narrowing. When larger
     /// than `schema_names.len()`, selection filtered the list for this step.
     pub candidate_total: usize,
+    /// Rough token cost of the tool schemas sent THIS step. Tool definitions are re-sent every
+    /// step, so this is a fixed per-step tax that is otherwise invisible — the reason to know it
+    /// is that prompt size, not generation, dominates wall time on a local model.
+    pub tools_tokens: usize,
 }
 
 #[derive(Clone, Serialize)]
@@ -1563,6 +1567,11 @@ pub async fn agent_loop<R: tauri::Runtime>(
     // Tools the model called last step — kept available next step so a multi-step chain
     // isn't broken by them dropping out of the fresh selection.
     let mut last_used: Vec<String> = Vec::new();
+    /// Move `name` to the most-recent end of an LRU list, inserting it if absent.
+    fn touch(lru: &mut Vec<String>, name: &str) {
+        lru.retain(|n| n != name);
+        lru.push(name.to_string());
+    }
     // Hashes of run_python code already executed this turn. A stubborn local model sometimes
     // re-issues the identical script (re-rendering the same chart and doubling the wall time)
     // even after being told the charts are already shown; we short-circuit the repeat.
@@ -1610,7 +1619,10 @@ pub async fn agent_loop<R: tauri::Runtime>(
     let mut artifact_emitted = false;
     let mut post_artifact_tool_calls: usize = 0;
     // Discovery mode: names of external tools the model has loaded this run via `find_tools`.
-    let mut loaded_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Discovery mode: tools the model has loaded via `find_tools`, oldest first. A Vec rather than
+    // a set because the order IS the eviction policy: the set only ever grew, so six find_tools
+    // calls could leave ~70 schemas in every later step and `maxTools` never applied here at all.
+    let mut loaded_tools: Vec<String> = Vec::new();
     // Whether the model ever streamed a genuine FINAL answer — text on a step with NO tool call.
     // Narration that accompanies a tool call ("Let me look that up…") does NOT count: a real answer
     // ends the run immediately, so if we reach a salvage site with only narration behind us, the
@@ -1631,7 +1643,8 @@ pub async fn agent_loop<R: tauri::Runtime>(
     let sys_prompt_effective = if discover_active {
         format!("{system_prompt}\n\nTOOL DISCOVERY: You have built-in tools (files, web search, \
             fetch, date/time, email, code) plus a `find_tools` tool. Specialized tools (external \
-            APIs, SPARQL/linked-data endpoints, MCP servers) are NOT loaded yet. When the task \
+            APIs, SPARQL/linked-data endpoints, MCP servers) are NOT loaded yet — nor is image \
+            generation, so call find_tools(\"generate an image\") before trying to create a picture. When the task \
             needs one, FIRST call find_tools with a short description of what you need; the matching \
             tools become callable on your next step. Never guess a specialized tool's name before \
             loading it with find_tools. IMPORTANT: for any question about specific data, facts, \
@@ -1697,9 +1710,17 @@ pub async fn agent_loop<R: tauri::Runtime>(
                     v.extend(g.tools.iter().cloned());
                 }
                 v.push(find_tools_schema());
-                let loaded_or_recent = |name: &str| loaded_tools.contains(name) || last_used.iter().any(|n| n == name);
-                for t in tool_groups.iter().filter(|g| g.label != BUILTIN_GROUP).flat_map(|g| &g.tools) {
-                    if loaded_or_recent(&t.function.name) && !v.iter().any(|x| x.function.name == t.function.name) {
+                // Most-recent first, so the cap evicts the tools loaded longest ago rather than
+                // whichever the group iteration happened to reach last. Tools called on the previous
+                // step outrank everything: dropping one mid-chain would strand the model.
+                let mut wanted: Vec<&str> = Vec::new();
+                for n in last_used.iter() { if !wanted.contains(&n.as_str()) { wanted.push(n); } }
+                for n in loaded_tools.iter().rev() { if !wanted.contains(&n.as_str()) { wanted.push(n); } }
+                for name in wanted {
+                    if v.len() >= cap { break; }
+                    if v.iter().any(|x| x.function.name == name) { continue; }
+                    if let Some(t) = tool_groups.iter().filter(|g| g.label != BUILTIN_GROUP)
+                        .flat_map(|g| &g.tools).find(|t| t.function.name == name) {
                         v.push(t.clone());
                     }
                 }
@@ -1728,8 +1749,13 @@ pub async fn agent_loop<R: tauri::Runtime>(
 
         let schema_names: Vec<String> = tools.iter().map(|t| t.function.name.clone()).collect();
         if !silent {
+            // ~4 chars per token is close enough for a cost indicator, and costs nothing to compute.
+            let tools_tokens = tools.iter()
+                .filter_map(|t| serde_json::to_string(t).ok().map(|j| j.len()))
+                .sum::<usize>() / 4;
             let _ = app.emit("debug-step-start", DebugStepEvent {
                 run_id, step, schema_names, candidate_total: always_tools.len() + discoverable_total,
+                tools_tokens,
             });
         }
         // Token counts at the start of this step, so the step's own usage is the delta at step-done.
@@ -1878,6 +1904,9 @@ pub async fn agent_loop<R: tauri::Runtime>(
 
         // Remember which tools were called so they stay available next step (chain continuity).
         last_used = tool_calls.iter().map(|tc| tc.function.name.clone()).collect();
+        // Calling a discovered tool makes it most-recent, so an actively-used tool is never the one
+        // evicted when the cap bites.
+        for n in &last_used { if loaded_tools.iter().any(|l| l == n) { touch(&mut loaded_tools, n); } }
 
         // Append assistant message to history
         {
@@ -2027,7 +2056,7 @@ pub async fn agent_loop<R: tauri::Runtime>(
             if name == "find_tools" {
                 let query = args.get("query").and_then(|q| q.as_str()).unwrap_or("");
                 let found = search_tools(query, tool_groups, 12);
-                for (nm, _) in &found { loaded_tools.insert(nm.clone()); }
+                for (nm, _) in &found { touch(&mut loaded_tools, nm); }
                 let result = if found.is_empty() {
                     format!("No tools matched \"{query}\". Try broader or different keywords, or \
                         proceed with your built-in tools.")
@@ -3600,6 +3629,55 @@ mod tests {
         let second = &bodies.lock().unwrap()[1];
         assert!(second.contains("\"role\":\"tool\""), "history sent in OpenAI tool shape: {second}");
         assert!(second.contains("call_xyz"), "tool_call_id preserved: {second}");
+    }
+
+    // ── Discovery-mode tool cap ───────────────────────────────────────────────
+
+    /// Mirrors the selection in `agent_loop`'s discovery branch: most-recently-used first, then
+    /// most-recently-loaded, capped. Kept as a free function so the policy can be tested without
+    /// standing up a whole agent run.
+    fn discovery_pick(cap: usize, base: usize, last_used: &[&str], loaded: &[&str]) -> Vec<String> {
+        let mut wanted: Vec<&str> = Vec::new();
+        for n in last_used { if !wanted.contains(n) { wanted.push(n); } }
+        for n in loaded.iter().rev() { if !wanted.contains(n) { wanted.push(n); } }
+        let mut out = Vec::new();
+        for name in wanted {
+            if base + out.len() >= cap { break; }
+            out.push(name.to_string());
+        }
+        out
+    }
+
+    #[test]
+    fn discovery_cap_evicts_the_oldest_loaded_tools() {
+        // 20 built-ins already in the request, cap 25 → room for 5 more.
+        let loaded = ["a", "b", "c", "d", "e", "f", "g", "h"]; // h loaded most recently
+        let got = discovery_pick(25, 20, &[], &loaded);
+        assert_eq!(got, vec!["h", "g", "f", "e", "d"], "keeps newest, drops the oldest loaded");
+    }
+
+    #[test]
+    fn discovery_cap_never_drops_a_tool_used_last_step() {
+        // "a" is the oldest load but was just called — dropping it would strand a tool chain.
+        let loaded = ["a", "b", "c", "d", "e", "f"];
+        let got = discovery_pick(23, 20, &["a"], &loaded);
+        assert_eq!(got[0], "a", "the tool called last step outranks recency of loading");
+        assert_eq!(got.len(), 3, "and the cap still binds");
+    }
+
+    #[test]
+    fn discovery_cap_with_no_room_adds_nothing() {
+        let loaded = ["a", "b"];
+        assert!(discovery_pick(20, 20, &[], &loaded).is_empty());
+    }
+
+    /// The bug this replaced: the loaded set only grew, so repeated find_tools calls piled every
+    /// discovered tool into every later step.
+    #[test]
+    fn discovery_cap_bounds_a_long_run_of_discoveries() {
+        let loaded: Vec<&str> = (0..70).map(|i| Box::leak(format!("t{i}").into_boxed_str()) as &str).collect();
+        let got = discovery_pick(40, 20, &[], &loaded);
+        assert_eq!(got.len(), 20, "70 discovered tools must not all reach the model");
     }
 
     // ── Runaway repetition ────────────────────────────────────────────────────

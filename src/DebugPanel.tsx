@@ -15,6 +15,9 @@ interface DebugStep {
   context?: StepContext;
   schemaNames: string[];
   candidateTotal?: number;
+  /** Approx tokens the tool schemas cost this step — re-sent every step, so it is a recurring
+   *  cost, not a one-off. */
+  toolsTokens?: number;
   llmText?: string;
   durationMs?: number;
   tokensIn?: number;
@@ -171,6 +174,12 @@ function StepRow({ step, isLast }: { step: DebugStep; isLast: boolean }) {
                 {step.candidateTotal != null && step.candidateTotal > step.schemaNames.length
                   ? `Schemas (selected ${step.schemaNames.length} of ${step.candidateTotal} tools)`
                   : `Schemas (${step.schemaNames.length} tools sent)`}
+                {step.toolsTokens != null && (
+                  <span style={{ opacity: 0.6 }}
+                    title="Approximate tokens the tool definitions cost. They are re-sent every step, so this recurs for each step of the run.">
+                    · ~{step.toolsTokens.toLocaleString()} tok/step
+                  </span>
+                )}
               </button>
               {schemasOpen && (
                 <div style={{ paddingLeft: 14, paddingBottom: 4 }}>
@@ -365,10 +374,11 @@ export function DebugPanel({ visible, clearKey }: Props) {
         });
 
       // New step starting — create the run on first sight of its run_id, else append the step.
-      unsubs.push(await listen<{ run_id: number; step: number; schema_names: string[]; candidate_total?: number }>("debug-step-start", ({ payload }) => {
+      unsubs.push(await listen<{ run_id: number; step: number; schema_names: string[]; candidate_total?: number; tools_tokens?: number }>("debug-step-start", ({ payload }) => {
         activeRunId.current = payload.run_id;
         const newStep: DebugStep = {
           index: payload.step, schemaNames: payload.schema_names, candidateTotal: payload.candidate_total,
+          toolsTokens: payload.tools_tokens,
           toolCalls: [], toolResults: [], tokens: "", thinking: "",
         };
         setRuns(prev => {
