@@ -1617,6 +1617,12 @@ pub async fn agent_loop<R: tauri::Runtime>(
     const POST_ARTIFACT_TOOL_BUDGET: usize = 2;
     let mut total_tool_calls: usize = 0;
     let mut artifact_emitted = false;
+    // Titles of artifacts already rendered this turn. `create_artifact`'s own result says "It is
+    // DONE — do NOT call create_artifact again", but that is only an instruction and models ignore
+    // it: observed twice in one turn, same title, near-identical narration, so the user got two
+    // copies of the same document stacked in the chat. run_python has an enforced idempotency
+    // guard for exactly this; artifacts had none.
+    let mut emitted_artifact_titles: Vec<String> = Vec::new();
     let mut post_artifact_tool_calls: usize = 0;
     // Discovery mode: names of external tools the model has loaded this run via `find_tools`.
     // Discovery mode: tools the model has loaded via `find_tools`, oldest first. A Vec rather than
@@ -2118,6 +2124,41 @@ pub async fn agent_loop<R: tauri::Runtime>(
                     tool_calls: None, tool_call_id: None, name: Some(name.clone()), images: None,
                 });
                 continue;
+            }
+
+            // Duplicate-artifact guard. A second artifact under a title already rendered this turn
+            // is a re-run or a "refinement", not a new deliverable — refuse it and push the model
+            // to its final answer. Matching on TITLE rather than content is deliberate: the repeat
+            // is rarely byte-identical (the model tweaks a heading or a field as it "improves" it),
+            // so a content hash would miss it, while a genuinely different deliverable in the same
+            // turn gets a different title and still goes through.
+            if name == "create_artifact" {
+                let title = args.get("title").and_then(|t| t.as_str()).unwrap_or("").trim().to_lowercase();
+                if !title.is_empty() && emitted_artifact_titles.iter().any(|t| *t == title) {
+                    // The wording has to stop the model DESCRIBING a second artifact as well as
+                    // creating one. With a softer note it accepted the refusal, then wrote "Here's
+                    // what was created: 1. First … 2. Second (with signature field) …" — narrating
+                    // a deliverable the user could not see, which is worse than the duplicate.
+                    let note = "[REFUSED: an artifact with this title was already rendered earlier \
+                        in this turn and is still displayed. Nothing was created by this call — \
+                        there is exactly ONE artifact in this conversation, not two. Do NOT call \
+                        create_artifact again, and do NOT describe, list or refer to a second \
+                        artifact in your answer: it does not exist and the user cannot see one. \
+                        Write your final answer about the single artifact already shown above.]"
+                        .to_string();
+                    if !silent {
+                        let _ = app.emit("agent-tool-call", ToolCallEvent { name: name.clone(), args: pretty_args.clone() });
+                        let _ = app.emit("agent-tool-result", ToolResultEvent {
+                            name: name.clone(), result: note.clone(), full_result: String::new(),
+                            full_truncated: false, ui: None, images: Vec::new(), artifact: None });
+                    }
+                    conversation.lock().unwrap().push(WireMessage {
+                        role: "tool".into(), content: Some(note),
+                        tool_calls: None, tool_call_id: None, name: Some(name.clone()), images: None,
+                    });
+                    continue;
+                }
+                if !title.is_empty() { emitted_artifact_titles.push(title); }
             }
 
             // Idempotency guard: if the model re-issues run_python with code it already ran this
@@ -3629,6 +3670,38 @@ mod tests {
         let second = &bodies.lock().unwrap()[1];
         assert!(second.contains("\"role\":\"tool\""), "history sent in OpenAI tool shape: {second}");
         assert!(second.contains("call_xyz"), "tool_call_id preserved: {second}");
+    }
+
+    // ── Duplicate artifacts ───────────────────────────────────────────────────
+
+    /// The matching rule from `agent_loop`'s duplicate-artifact guard, isolated so the policy is
+    /// testable without standing up a run: a title already rendered this turn is a repeat.
+    fn artifact_is_duplicate(seen: &[String], title: &str) -> bool {
+        let t = title.trim().to_lowercase();
+        !t.is_empty() && seen.iter().any(|s| *s == t)
+    }
+
+    #[test]
+    fn second_artifact_with_the_same_title_is_refused() {
+        let seen = vec!["daily task list".to_string()];
+        // The observed failure: same title, model "refining" it into a second copy.
+        assert!(artifact_is_duplicate(&seen, "Daily Task List"));
+        assert!(artifact_is_duplicate(&seen, "  daily task list  "), "case and padding must not evade it");
+    }
+
+    #[test]
+    fn a_genuinely_different_deliverable_still_renders() {
+        let seen = vec!["daily task list".to_string()];
+        assert!(!artifact_is_duplicate(&seen, "Closing Checklist"),
+            "a second, different artifact in one turn is legitimate");
+    }
+
+    #[test]
+    fn an_untitled_artifact_is_never_treated_as_a_duplicate() {
+        // Empty titles would otherwise all collide with each other.
+        let seen = vec!["".to_string()];
+        assert!(!artifact_is_duplicate(&seen, ""));
+        assert!(!artifact_is_duplicate(&seen, "   "));
     }
 
     // ── Discovery-mode tool cap ───────────────────────────────────────────────
