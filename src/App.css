@@ -247,6 +247,43 @@ html, body, #root { height: 100%; overflow: hidden; }
 .history-item:hover .history-del { opacity: 1; }
 .history-del:hover { color: #ef4444; background: var(--surface3); }
 
+/* Pin: hidden until row hover, but a pinned chat keeps its pin visible and accented so the
+   state reads at a glance without hovering. Mirrors .history-del's reveal-on-hover pattern. */
+.history-pin {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 5px;
+  display: flex;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+.history-item:hover .history-pin { opacity: 1; }
+.history-pin:hover { color: var(--accent); background: var(--surface3); }
+.history-pin.on { opacity: 1; color: var(--accent); }
+.history-pin.on svg { fill: currentColor; }
+
+/* A pinned row carries a faint accent rail so the pinned group is legible as a group. */
+.history-item.pinned { position: relative; }
+.history-item.pinned::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 6px; bottom: 6px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+/* Separates the pinned group from the rest of the list. */
+.history-divider {
+  height: 1px;
+  background: var(--surface3);
+  margin: 5px 6px 6px;
+}
+
 /* ── Welcome screen ─────────────────────────────────────────────────────────── */
 .welcome {
   margin: auto;

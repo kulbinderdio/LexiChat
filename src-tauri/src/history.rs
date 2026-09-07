@@ -23,6 +23,12 @@ pub struct ConversationMeta {
     pub updated_at: i64,
     #[serde(default)]
     pub message_count: usize,
+    /// Pinned chats sort to the top of the history list regardless of recency. The index is the
+    /// authority for this — see `save_one`, which preserves it across a message-triggered save so
+    /// a new message never silently unpins a chat. `#[serde(default)]` keeps pre-pinning files
+    /// loading as unpinned.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// A full saved conversation: metadata + backend wire history + frontend display.
@@ -105,14 +111,35 @@ pub fn load_one(id: &str) -> Option<Conversation> {
 
 /// Write the conversation file and upsert its meta into the index (newest first).
 pub fn save_one(conv: &Conversation) -> anyhow::Result<()> {
-    let json = serde_json::to_string_pretty(conv)?;
+    let mut index = load_index();
+
+    // Organizer metadata (pinned, and later folder) is set through its own command, not carried
+    // in the frontend's save payload — so a message-triggered save arrives with pinned = false.
+    // Preserve the index's value into the record we write, or a new message would unpin the chat.
+    let mut conv = conv.clone();
+    if let Some(prev) = index.iter().find(|m| m.id == conv.meta.id) {
+        conv.meta.pinned = prev.pinned;
+    }
+
+    let json = serde_json::to_string_pretty(&conv)?;
     std::fs::write(conversation_path(&conv.meta.id), json)?;
 
-    let mut index = load_index();
     index.retain(|m| m.id != conv.meta.id);
     index.push(conv.meta.clone());
     index.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     save_index(&index)
+}
+
+/// Pin or unpin a chat. Index-only: pinned state lives in the index (the authority), so this is a
+/// cheap metadata write, not a rewrite of a possibly-large conversation file. `save_one` carries
+/// the value back into the file on the next message.
+pub fn set_pinned(id: &str, pinned: bool) -> anyhow::Result<()> {
+    let mut index = load_index();
+    if let Some(m) = index.iter_mut().find(|m| m.id == id) {
+        m.pinned = pinned;
+        save_index(&index)?;
+    }
+    Ok(())
 }
 
 pub fn delete_one(id: &str) -> anyhow::Result<()> {
@@ -168,7 +195,7 @@ mod tests {
         struct Item { #[serde(flatten)] meta: ConversationMeta, size_bytes: u64 }
         let meta = ConversationMeta {
             id: "conv-1".into(), title: "t".into(), profile_id: None,
-            model: "m".into(), created_at: 1, updated_at: 2, message_count: 3,
+            model: "m".into(), created_at: 1, updated_at: 2, message_count: 3, pinned: false,
         };
         let v = serde_json::to_value(Item { meta, size_bytes: 4096 }).unwrap();
         assert_eq!(v["id"], "conv-1");            // flattened, not nested under "meta"
@@ -181,6 +208,16 @@ mod tests {
     #[test]
     fn disk_size_handles_a_missing_files_dir() {
         assert_eq!(disk_size("conv-does-not-exist-at-all"), 0);
+    }
+
+    /// An index written before pinning existed has no `pinned` field; it must load as unpinned,
+    /// not fail to deserialize (which would blank the whole history list).
+    #[test]
+    fn pre_pinning_meta_loads_as_unpinned() {
+        let old = r#"{"id":"c1","title":"t","profile_id":null,"model":"m",
+                      "created_at":1,"updated_at":2,"message_count":3}"#;
+        let m: ConversationMeta = serde_json::from_str(old).unwrap();
+        assert!(!m.pinned, "a chat from before pinning must default to unpinned");
     }
 
     /// Attachments are paths, not bytes, so a file can vanish between saving a chat and

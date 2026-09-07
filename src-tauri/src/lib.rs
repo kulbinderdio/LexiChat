@@ -255,11 +255,15 @@ struct ConversationListItem {
 /// A `None` profile matches conversations saved with no active profile.
 #[tauri::command]
 fn list_conversations(args: ListConversationsArgs) -> Vec<ConversationListItem> {
-    history::load_index()
+    let mut items: Vec<ConversationListItem> = history::load_index()
         .into_iter()
         .filter(|m| m.profile_id == args.profile_id)
         .map(|m| { let size_bytes = history::disk_size(&m.id); ConversationListItem { meta: m, size_bytes } })
-        .collect()
+        .collect();
+    // Pinned chats float to the top; within each group, most-recently-updated first.
+    items.sort_by(|a, b| b.meta.pinned.cmp(&a.meta.pinned)
+        .then(b.meta.updated_at.cmp(&a.meta.updated_at)));
+    items
 }
 
 #[derive(Deserialize)]
@@ -310,6 +314,8 @@ fn save_active_conversation(
         created_at,
         updated_at: now,
         message_count: args.message_count,
+        // Preserved from the index by save_one; the frontend save payload never carries it.
+        pinned: false,
     };
     let conv = history::Conversation {
         meta: meta.clone(), wire, display: args.display, attachments: args.attachments,
@@ -429,6 +435,17 @@ pub struct RenameConversationArgs {
 #[tauri::command]
 fn rename_conversation(args: RenameConversationArgs) -> Result<(), String> {
     history::rename(&args.id, &args.title).map_err(|e| e.to_string())
+}
+
+#[derive(Deserialize)]
+pub struct SetPinnedArgs {
+    pub id: String,
+    pub pinned: bool,
+}
+
+#[tauri::command]
+fn set_conversation_pinned(args: SetPinnedArgs) -> Result<(), String> {
+    history::set_pinned(&args.id, args.pinned).map_err(|e| e.to_string())
 }
 
 // ── Send message ──────────────────────────────────────────────────────────────
@@ -2638,6 +2655,7 @@ pub fn run() {
             delete_wiki_page,
             delete_conversation,
             rename_conversation,
+            set_conversation_pinned,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

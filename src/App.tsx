@@ -2007,6 +2007,13 @@ export default function App() {
     } catch { /* ignore */ }
   };
 
+  const handlePinConversation = async (id: string, pinned: boolean) => {
+    try {
+      await invoke("set_conversation_pinned", { args: { id, pinned } });
+      refreshConversations();
+    } catch { /* ignore */ }
+  };
+
   // Listen to agent events from Rust
   useEffect(() => {
     const cleanup: Array<() => void> = [];
@@ -2953,6 +2960,7 @@ export default function App() {
         onNew={handleReset}
         onDelete={handleDeleteConversation}
         onRename={handleRenameConversation}
+        onPin={handlePinConversation}
         onHide={() => setShowHistory(false)}
       />
       <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>

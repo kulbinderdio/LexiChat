@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, Trash2, PanelLeftClose } from "lucide-react";
+import { Plus, Trash2, PanelLeftClose, Pin } from "lucide-react";
 
 // Mirrors the Rust `history::ConversationMeta` (snake_case over the wire).
 export interface ConversationMeta {
@@ -10,6 +10,8 @@ export interface ConversationMeta {
   created_at: number; // unix seconds
   updated_at: number;
   message_count: number;
+  /// Pinned chats are returned first by the backend and shown above a divider in the list.
+  pinned?: boolean;
   /// On-disk footprint: the saved JSON plus any working files kept with the chat. Computed by the
   /// backend on each list, so it reflects reality rather than a stored guess.
   size_bytes?: number;
@@ -23,6 +25,7 @@ interface Props {
   onNew: () => void;
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => void;
+  onPin: (id: string, pinned: boolean) => void;
   onHide: () => void;
 }
 
@@ -45,7 +48,7 @@ function relativeTime(unixSecs: number): string {
   return new Date(unixSecs * 1000).toLocaleDateString();
 }
 
-export function HistoryPanel({ visible, conversations, activeId, onSelect, onNew, onDelete, onRename, onHide }: Props) {
+export function HistoryPanel({ visible, conversations, activeId, onSelect, onNew, onDelete, onRename, onPin, onHide }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
 
@@ -80,10 +83,14 @@ export function HistoryPanel({ visible, conversations, activeId, onSelect, onNew
         {conversations.length === 0 && (
           <div className="history-empty">No saved conversations yet.</div>
         )}
-        {conversations.map(c => (
+        {conversations.map((c, i) => (
+          <div key={c.id} className="history-row">
+            {/* Divider between the pinned group and the rest — only when both exist. */}
+            {!c.pinned && i > 0 && conversations[i - 1].pinned && (
+              <div className="history-divider" />
+            )}
           <div
-            key={c.id}
-            className={`history-item ${c.id === activeId ? "active" : ""}`}
+            className={`history-item ${c.id === activeId ? "active" : ""} ${c.pinned ? "pinned" : ""}`}
             onClick={() => editingId !== c.id && onSelect(c.id)}
           >
             <div className="history-item-main">
@@ -125,12 +132,20 @@ export function HistoryPanel({ visible, conversations, activeId, onSelect, onNew
               </div>
             </div>
             <button
+              className={`history-pin ${c.pinned ? "on" : ""}`}
+              title={c.pinned ? "Unpin conversation" : "Pin conversation"}
+              onClick={e => { e.stopPropagation(); onPin(c.id, !c.pinned); }}
+            >
+              <Pin size={13} />
+            </button>
+            <button
               className="history-del"
               title="Delete conversation"
               onClick={e => { e.stopPropagation(); onDelete(c.id); }}
             >
               <Trash2 size={13} />
             </button>
+          </div>
           </div>
         ))}
       </div>
