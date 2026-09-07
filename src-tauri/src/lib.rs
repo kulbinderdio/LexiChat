@@ -314,8 +314,9 @@ fn save_active_conversation(
         created_at,
         updated_at: now,
         message_count: args.message_count,
-        // Preserved from the index by save_one; the frontend save payload never carries it.
+        // Preserved from the index by save_one; the frontend save payload never carries these.
         pinned: false,
+        folder: None,
     };
     let conv = history::Conversation {
         meta: meta.clone(), wire, display: args.display, attachments: args.attachments,
@@ -458,6 +459,19 @@ pub struct SearchConversationsArgs {
 #[tauri::command]
 fn search_conversations(args: SearchConversationsArgs) -> Vec<history::SearchHit> {
     history::search(&args.query, args.profile_id.as_deref())
+}
+
+#[derive(Deserialize)]
+pub struct SetFolderArgs {
+    pub id: String,
+    /// The folder name, or null / empty to move the chat back to ungrouped.
+    #[serde(default)]
+    pub folder: Option<String>,
+}
+
+#[tauri::command]
+fn set_conversation_folder(args: SetFolderArgs) -> Result<(), String> {
+    history::set_folder(&args.id, args.folder).map_err(|e| e.to_string())
 }
 
 // ── Send message ──────────────────────────────────────────────────────────────
@@ -2669,6 +2683,7 @@ pub fn run() {
             rename_conversation,
             set_conversation_pinned,
             search_conversations,
+            set_conversation_folder,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

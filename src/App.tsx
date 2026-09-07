@@ -2042,6 +2042,13 @@ export default function App() {
     } catch { /* ignore */ }
   };
 
+  const handleSetFolder = async (id: string, folder: string | null) => {
+    try {
+      await invoke("set_conversation_folder", { args: { id, folder } });
+      refreshConversations();
+    } catch { /* ignore */ }
+  };
+
   // Listen to agent events from Rust
   useEffect(() => {
     const cleanup: Array<() => void> = [];
@@ -2989,6 +2996,7 @@ export default function App() {
         onDelete={handleDeleteConversation}
         onRename={handleRenameConversation}
         onPin={handlePinConversation}
+        onSetFolder={handleSetFolder}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         onHide={() => setShowHistory(false)}

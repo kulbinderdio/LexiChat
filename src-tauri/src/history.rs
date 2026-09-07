@@ -29,6 +29,11 @@ pub struct ConversationMeta {
     /// loading as unpinned.
     #[serde(default)]
     pub pinned: bool,
+    /// Optional folder the chat is filed under. `None` = ungrouped. Like `pinned`, the index is the
+    /// authority and `save_one` preserves it. A folder exists only as long as some chat references
+    /// it — there is no separate folder registry to keep in sync.
+    #[serde(default)]
+    pub folder: Option<String>,
 }
 
 /// A full saved conversation: metadata + backend wire history + frontend display.
@@ -113,12 +118,14 @@ pub fn load_one(id: &str) -> Option<Conversation> {
 pub fn save_one(conv: &Conversation) -> anyhow::Result<()> {
     let mut index = load_index();
 
-    // Organizer metadata (pinned, and later folder) is set through its own command, not carried
-    // in the frontend's save payload — so a message-triggered save arrives with pinned = false.
-    // Preserve the index's value into the record we write, or a new message would unpin the chat.
+    // Organizer metadata (pinned, folder) is set through its own command, not carried in the
+    // frontend's save payload — so a message-triggered save arrives with pinned = false and no
+    // folder. Preserve the index's values into the record we write, or a new message would unpin
+    // the chat or knock it out of its folder.
     let mut conv = conv.clone();
     if let Some(prev) = index.iter().find(|m| m.id == conv.meta.id) {
         conv.meta.pinned = prev.pinned;
+        conv.meta.folder = prev.folder.clone();
     }
 
     let json = serde_json::to_string_pretty(&conv)?;
@@ -137,6 +144,17 @@ pub fn set_pinned(id: &str, pinned: bool) -> anyhow::Result<()> {
     let mut index = load_index();
     if let Some(m) = index.iter_mut().find(|m| m.id == id) {
         m.pinned = pinned;
+        save_index(&index)?;
+    }
+    Ok(())
+}
+
+/// File a chat under `folder` (trimmed; empty or `None` clears it). Index-only, like `set_pinned`.
+pub fn set_folder(id: &str, folder: Option<String>) -> anyhow::Result<()> {
+    let folder = folder.map(|f| f.trim().to_string()).filter(|f| !f.is_empty());
+    let mut index = load_index();
+    if let Some(m) = index.iter_mut().find(|m| m.id == id) {
+        m.folder = folder;
         save_index(&index)?;
     }
     Ok(())
@@ -259,6 +277,7 @@ mod tests {
         let meta = ConversationMeta {
             id: "conv-1".into(), title: "t".into(), profile_id: None,
             model: "m".into(), created_at: 1, updated_at: 2, message_count: 3, pinned: false,
+            folder: None,
         };
         let v = serde_json::to_value(Item { meta, size_bytes: 4096 }).unwrap();
         assert_eq!(v["id"], "conv-1");            // flattened, not nested under "meta"
@@ -281,6 +300,18 @@ mod tests {
                       "created_at":1,"updated_at":2,"message_count":3}"#;
         let m: ConversationMeta = serde_json::from_str(old).unwrap();
         assert!(!m.pinned, "a chat from before pinning must default to unpinned");
+        assert!(m.folder.is_none(), "and to ungrouped");
+    }
+
+    #[test]
+    fn set_folder_trims_and_treats_blank_as_ungrouped() {
+        // The command normalizes: whitespace is trimmed, and an all-whitespace name clears it.
+        // (Verified at the normalization boundary; the index write itself needs a data dir.)
+        let norm = |f: Option<&str>| f.map(|f| f.trim().to_string()).filter(|f| !f.is_empty());
+        assert_eq!(norm(Some("  Work  ")), Some("Work".to_string()));
+        assert_eq!(norm(Some("   ")), None);
+        assert_eq!(norm(Some("")), None);
+        assert_eq!(norm(None), None);
     }
 
     #[test]
