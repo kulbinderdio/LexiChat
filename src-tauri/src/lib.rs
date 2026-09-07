@@ -448,6 +448,18 @@ fn set_conversation_pinned(args: SetPinnedArgs) -> Result<(), String> {
     history::set_pinned(&args.id, args.pinned).map_err(|e| e.to_string())
 }
 
+#[derive(Deserialize)]
+pub struct SearchConversationsArgs {
+    pub query: String,
+    #[serde(default)]
+    pub profile_id: Option<String>,
+}
+
+#[tauri::command]
+fn search_conversations(args: SearchConversationsArgs) -> Vec<history::SearchHit> {
+    history::search(&args.query, args.profile_id.as_deref())
+}
+
 // ── Send message ──────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -2656,6 +2668,7 @@ pub fn run() {
             delete_conversation,
             rename_conversation,
             set_conversation_pinned,
+            search_conversations,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

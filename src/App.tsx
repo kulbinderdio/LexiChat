@@ -1873,6 +1873,34 @@ export default function App() {
 
   useEffect(() => { refreshConversations(); }, [refreshConversations]);
 
+  // Full-content chat search. The backend scans message text (the index holds only metadata), so
+  // this is a debounced call rather than a client-side filter. `null` hits = not searching; an
+  // empty map = searched, nothing matched.
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchHits, setSearchHits] = useState<Map<string, string> | null>(null);
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (!q) { setSearchHits(null); return; }
+    const t = setTimeout(async () => {
+      try {
+        const hits = await invoke<{ id: string; snippet: string }[]>("search_conversations", {
+          args: { query: q, profile_id: settings.activeProfileId ?? null },
+        });
+        setSearchHits(new Map(hits.map(h => [h.id, h.snippet])));
+      } catch { setSearchHits(new Map()); }
+    }, 200);
+    return () => clearTimeout(t);
+  }, [searchQuery, settings.activeProfileId]);
+
+  // What the history panel actually shows: the full list, or — while searching — only the matches,
+  // each carrying its snippet, in the existing pinned-first order.
+  const displayedConversations = useMemo(() => {
+    if (!searchHits) return conversations;
+    return conversations
+      .filter(c => searchHits.has(c.id))
+      .map(c => ({ ...c, snippet: searchHits.get(c.id) }));
+  }, [conversations, searchHits]);
+
   // Stream ownership: agent events from Rust are anonymous, so a run that's been
   // superseded (new chat / profile switch) must not have its trailing tokens land in the
   // now-visible chat. `streamEpoch` bumps on every send AND every context switch;
@@ -2954,13 +2982,15 @@ export default function App() {
 
       <HistoryPanel
         visible={showHistory}
-        conversations={conversations}
+        conversations={displayedConversations}
         activeId={activeConversationId}
         onSelect={handleSelectConversation}
         onNew={handleReset}
         onDelete={handleDeleteConversation}
         onRename={handleRenameConversation}
         onPin={handlePinConversation}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
         onHide={() => setShowHistory(false)}
       />
       <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>

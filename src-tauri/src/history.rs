@@ -142,6 +142,69 @@ pub fn set_pinned(id: &str, pinned: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A conversation whose title or message text contains the query, with a short snippet around the
+/// first hit for the history list to show under the title.
+#[derive(Clone, Serialize)]
+pub struct SearchHit {
+    pub id: String,
+    pub snippet: String,
+}
+
+/// A window of `text` centred on the first case-insensitive occurrence of `q` (already lowercased),
+/// with ellipses and collapsed whitespace, so a match deep in a long message reads as one tidy line.
+fn make_snippet(text: &str, q: &str) -> String {
+    let lower = text.to_lowercase();
+    let chars: Vec<char> = text.chars().collect();
+    // Map the byte position of the match to a char index. Lowercasing can shift lengths for a few
+    // unicode chars, so this is best-effort for display — a slight offset only nudges the window.
+    let cpos = lower.find(q).map(|b| lower[..b].chars().count()).unwrap_or(0);
+    let start = cpos.saturating_sub(40);
+    let end = (cpos + q.chars().count() + 60).min(chars.len());
+    let mut s = String::new();
+    if start > 0 { s.push('…'); }
+    s.extend(&chars[start..end]);
+    if end < chars.len() { s.push('…'); }
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Full-text search over saved chats: title plus user/assistant message content. Tool results and
+/// system text are excluded — they are bulk/noise, not what "search my chats" means.
+///
+/// A raw-substring pre-filter rejects non-matching files before the (more expensive) JSON parse, so
+/// only files that actually contain the query are parsed to build a clean snippet. At a few hundred
+/// conversations this is fast enough for a debounced as-you-type search without a separate index.
+pub fn search(query: &str, profile_id: Option<&str>) -> Vec<SearchHit> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() { return Vec::new(); }
+
+    let mut hits = Vec::new();
+    for meta in load_index() {
+        if let Some(p) = profile_id {
+            if meta.profile_id.as_deref() != Some(p) { continue; }
+        }
+        let Ok(raw) = std::fs::read_to_string(conversation_path(&meta.id)) else { continue };
+        if !raw.to_lowercase().contains(&q) { continue; } // fast reject, no parse
+
+        // Title is the cheapest relevant match.
+        if meta.title.to_lowercase().contains(&q) {
+            hits.push(SearchHit { id: meta.id.clone(), snippet: make_snippet(&meta.title, &q) });
+            continue;
+        }
+        // Otherwise look in the actual conversation text. A raw match that is only in a tool result
+        // or system prompt is treated as noise and skipped.
+        if let Ok(conv) = serde_json::from_str::<Conversation>(&raw) {
+            if let Some(text) = conv.wire.iter()
+                .filter(|m| matches!(m.role.as_str(), "user" | "assistant"))
+                .filter_map(|m| m.content.as_deref())
+                .find(|c| c.to_lowercase().contains(&q))
+            {
+                hits.push(SearchHit { id: meta.id, snippet: make_snippet(text, &q) });
+            }
+        }
+    }
+    hits
+}
+
 pub fn delete_one(id: &str) -> anyhow::Result<()> {
     let _ = std::fs::remove_file(conversation_path(id));
     let mut index = load_index();
@@ -218,6 +281,24 @@ mod tests {
                       "created_at":1,"updated_at":2,"message_count":3}"#;
         let m: ConversationMeta = serde_json::from_str(old).unwrap();
         assert!(!m.pinned, "a chat from before pinning must default to unpinned");
+    }
+
+    #[test]
+    fn snippet_windows_around_the_match_and_collapses_whitespace() {
+        let text = "The quick brown fox\njumps over   the lazy dog by the river".to_string();
+        let s = make_snippet(&text, "lazy");
+        assert!(s.contains("lazy"), "snippet must contain the match: {s:?}");
+        assert!(!s.contains('\n') && !s.contains("   "), "whitespace collapsed: {s:?}");
+    }
+
+    #[test]
+    fn snippet_adds_ellipses_only_when_it_actually_truncates() {
+        // Match at the very start of a short string: no leading ellipsis, no trailing one.
+        assert_eq!(make_snippet("hello world", "hello"), "hello world");
+        // Match deep in a long string: both ends elided.
+        let long = "x ".repeat(80) + "needle " + &"y ".repeat(80);
+        let s = make_snippet(&long, "needle");
+        assert!(s.starts_with('…') && s.ends_with('…'), "both ends elided: {s:?}");
     }
 
     /// Attachments are paths, not bytes, so a file can vanish between saving a chat and

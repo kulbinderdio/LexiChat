@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, Trash2, PanelLeftClose, Pin } from "lucide-react";
+import { Plus, Trash2, PanelLeftClose, Pin, Search, X } from "lucide-react";
 
 // Mirrors the Rust `history::ConversationMeta` (snake_case over the wire).
 export interface ConversationMeta {
@@ -12,6 +12,8 @@ export interface ConversationMeta {
   message_count: number;
   /// Pinned chats are returned first by the backend and shown above a divider in the list.
   pinned?: boolean;
+  /// Display-only: a snippet of the search match, attached by App while a search is active.
+  snippet?: string;
   /// On-disk footprint: the saved JSON plus any working files kept with the chat. Computed by the
   /// backend on each list, so it reflects reality rather than a stored guess.
   size_bytes?: number;
@@ -26,6 +28,8 @@ interface Props {
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onPin: (id: string, pinned: boolean) => void;
+  searchQuery: string;
+  onSearchChange: (q: string) => void;
   onHide: () => void;
 }
 
@@ -48,7 +52,7 @@ function relativeTime(unixSecs: number): string {
   return new Date(unixSecs * 1000).toLocaleDateString();
 }
 
-export function HistoryPanel({ visible, conversations, activeId, onSelect, onNew, onDelete, onRename, onPin, onHide }: Props) {
+export function HistoryPanel({ visible, conversations, activeId, onSelect, onNew, onDelete, onRename, onPin, searchQuery, onSearchChange, onHide }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
 
@@ -79,14 +83,32 @@ export function HistoryPanel({ visible, conversations, activeId, onSelect, onNew
         </button>
       </div>
 
+      <div className="history-search">
+        <Search size={13} className="history-search-icon" />
+        <input
+          className="history-search-input"
+          placeholder="Search chats…"
+          value={searchQuery}
+          onChange={e => onSearchChange(e.target.value)}
+        />
+        {searchQuery && (
+          <button className="history-search-clear" title="Clear search" onClick={() => onSearchChange("")}>
+            <X size={13} />
+          </button>
+        )}
+      </div>
+
       <div className="history-list">
         {conversations.length === 0 && (
-          <div className="history-empty">No saved conversations yet.</div>
+          <div className="history-empty">
+            {searchQuery.trim() ? "No chats match your search." : "No saved conversations yet."}
+          </div>
         )}
         {conversations.map((c, i) => (
           <div key={c.id} className="history-row">
-            {/* Divider between the pinned group and the rest — only when both exist. */}
-            {!c.pinned && i > 0 && conversations[i - 1].pinned && (
+            {/* Divider between the pinned group and the rest — only when both exist, and not while
+                searching (the list is filtered then, so the grouping is beside the point). */}
+            {!searchQuery && !c.pinned && i > 0 && conversations[i - 1].pinned && (
               <div className="history-divider" />
             )}
           <div
@@ -130,6 +152,7 @@ export function HistoryPanel({ visible, conversations, activeId, onSelect, onNew
                   </>
                 )}
               </div>
+              {c.snippet && <div className="history-snippet">{c.snippet}</div>}
             </div>
             <button
               className={`history-pin ${c.pinned ? "on" : ""}`}
