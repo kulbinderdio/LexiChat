@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ReactMarkdown, { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Settings, RotateCcw, Bug, Paperclip, Info, Clock, PanelLeft, BarChart3, Brain } from "lucide-react";
+import { Settings, RotateCcw, Bug, Paperclip, Info, Clock, PanelLeft, BarChart3, Brain, Pencil, RefreshCw } from "lucide-react";
 import { JobsPanel } from "./JobsPanel";
 import type { JobRun } from "./jobTypes";
 import lexiLogo from "./assets/lexi.png";
@@ -51,6 +51,8 @@ interface ChatMessage {
   savePrompt?: string[];     // run_python output files awaiting a folder — rendered with a Save button
   fullResult?: string;       // FULL untruncated tool result (connector viewer) — NOT persisted
   fullTruncated?: boolean;   // true if even fullResult hit the display cap
+  wireBase?: number;         // backend wire length just before this user message — the truncation
+                             // anchor for edit/regenerate (user messages only)
 }
 
 // A conversation autosaved mid-stream (e.g. the app was interrupted, or Stop landed between saves)
@@ -547,7 +549,18 @@ function CopyButton({ text }: { text: string }) {
 
 // ── Message bubbles ───────────────────────────────────────────────────────────
 
-function UserMessage({ text, imageDataUrls }: { text: string; imageDataUrls?: string[] }) {
+function UserMessage({ text, imageDataUrls, canEdit, onEdit }: {
+  text: string; imageDataUrls?: string[];
+  canEdit?: boolean; onEdit?: (newText: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(text);
+  const start = () => { setDraft(text); setEditing(true); };
+  const save = () => {
+    const t = draft.trim();
+    setEditing(false);
+    if (t && t !== text) onEdit?.(t);
+  };
   return (
     <div className="msg-user">
       {imageDataUrls && imageDataUrls.length > 0 && (
@@ -557,7 +570,34 @@ function UserMessage({ text, imageDataUrls }: { text: string; imageDataUrls?: st
           ))}
         </div>
       )}
-      {text && <div className="user-bubble">{text}</div>}
+      {editing ? (
+        <div className="user-edit">
+          <textarea
+            className="user-edit-input"
+            autoFocus
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); save(); }
+              if (e.key === "Escape") setEditing(false);
+            }}
+          />
+          <div className="user-edit-actions">
+            <span className="user-edit-hint">Editing discards everything after this message.</span>
+            <button className="user-edit-cancel" onClick={() => setEditing(false)}>Cancel</button>
+            <button className="user-edit-save" onClick={save}>Save &amp; submit</button>
+          </div>
+        </div>
+      ) : text && (
+        <div className="user-bubble-wrap">
+          <div className="user-bubble">{text}</div>
+          {canEdit && onEdit && (
+            <button className="user-edit-btn" title="Edit & resubmit" onClick={start}>
+              <Pencil size={12} />
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -731,7 +771,7 @@ function ToolCallBadge({ tc }: { tc: ToolCall }) {
   );
 }
 
-function AssistantMessage({ msg, onExport, thinkingAt }: { msg: ChatMessage; onExport?: (msgId: string) => void; thinkingAt?: number | null }) {
+function AssistantMessage({ msg, onExport, onRegenerate, thinkingAt }: { msg: ChatMessage; onExport?: (msgId: string) => void; onRegenerate?: () => void; thinkingAt?: number | null }) {
   const showThinking = msg.streaming && !msg.text && (!msg.toolCalls || msg.toolCalls.length === 0);
   return (
     <div className="msg-assistant">
@@ -766,6 +806,12 @@ function AssistantMessage({ msg, onExport, thinkingAt }: { msg: ChatMessage; onE
         {!msg.streaming && msg.text && (
           <div style={{ display: "flex", gap: 4 }}>
             <CopyButton text={msg.text} />
+            {onRegenerate && (
+              <button className="copy-btn" title="Regenerate this response"
+                onClick={onRegenerate}>
+                <RefreshCw size={12} /> Regenerate
+              </button>
+            )}
             {onExport && (
               <button className="copy-btn" title="Save the full response as a report (HTML / PDF / Word)"
                 onClick={() => onExport(msg.id)}>
@@ -2018,6 +2064,39 @@ export default function App() {
     return () => clearTimeout(t);
   }, [messages, isRunning, saveActiveConversation]);
 
+  // Edit/regenerate: truncate the wire back to a user message's checkpoint, drop the display from
+  // that message on, and re-send. `truncate_conversation` keeps full-fidelity history before the
+  // point (real tool calls/results), which counting display messages could not.
+  const rerunFromUserMessage = async (userIndex: number, text: string) => {
+    if (isRunningRef.current) return;
+    const msgs = messagesRef.current;
+    const target = msgs[userIndex];
+    if (!target || target.role !== "user" || target.wireBase == null) return;
+    await invoke("truncate_conversation", { args: { len: target.wireBase } }).catch(() => {});
+    setMessages(msgs.slice(0, userIndex));   // drop the old turn(s); send() re-appends the user msg
+    // Let the truncated state settle before send() reads conversation_len for the new stamp.
+    await new Promise(r => setTimeout(r, 0));
+    await sendRef.current?.(text);
+  };
+
+  const handleRegenerate = async (assistantId: string) => {
+    const msgs = messagesRef.current;
+    const aIdx = msgs.findIndex(m => m.id === assistantId);
+    if (aIdx < 0) return;
+    // The user message that prompted this response — the last user message before it.
+    let uIdx = -1;
+    for (let i = aIdx - 1; i >= 0; i--) { if (msgs[i].role === "user") { uIdx = i; break; } }
+    if (uIdx < 0) return;
+    await rerunFromUserMessage(uIdx, msgs[uIdx].text);
+  };
+
+  const handleEditUserMessage = async (userId: string, newText: string) => {
+    const msgs = messagesRef.current;
+    const uIdx = msgs.findIndex(m => m.id === userId);
+    if (uIdx < 0 || !newText.trim()) return;
+    await rerunFromUserMessage(uIdx, newText.trim());
+  };
+
   const handleSelectConversation = async (id: string) => {
     if (isRunning) return;
     try {
@@ -2584,7 +2663,9 @@ export default function App() {
       imagePaths.map(p => invoke<string>("read_image_data_url", { path: p }).catch(() => ""))
     ).then(urls => urls.filter(Boolean));
 
-    setMessages(prev => [...prev, { id: uid(), role: "user", text: displayText, imageDataUrls }]);
+    // Stamp the pre-send wire length as this message's edit/regenerate anchor.
+    const wireBase = await invoke<number>("conversation_len").catch(() => undefined);
+    setMessages(prev => [...prev, { id: uid(), role: "user", text: displayText, imageDataUrls, wireBase }]);
     conversationFilesRef.current = [
       ...conversationFilesRef.current,
       ...attachedFiles.filter(f => !conversationFilesRef.current.includes(f)),
@@ -3046,9 +3127,17 @@ export default function App() {
           </div>
         ) : (
           <div className="messages">
-            {messages.map((msg, i) => {
-              if (msg.role === "user")        return <UserMessage key={msg.id} text={msg.text} imageDataUrls={msg.imageDataUrls} />;
-              if (msg.role === "assistant")   return <AssistantMessage key={msg.id} msg={msg} thinkingAt={thinkingAt} onExport={isLastAssistantInTurn(messages, i) ? exportReport : undefined} />;
+            {(() => {
+              // Regenerate is offered only on the LAST assistant message (it re-runs the final turn,
+              // discarding nothing after it). Edit is offered on any user message with a checkpoint.
+              const lastAssistantId = [...messages].reverse().find(m => m.role === "assistant")?.id;
+              return messages.map((msg, i) => {
+              if (msg.role === "user")        return <UserMessage key={msg.id} text={msg.text} imageDataUrls={msg.imageDataUrls}
+                                                       canEdit={!isRunning && msg.wireBase != null}
+                                                       onEdit={t => handleEditUserMessage(msg.id, t)} />;
+              if (msg.role === "assistant")   return <AssistantMessage key={msg.id} msg={msg} thinkingAt={thinkingAt}
+                                                       onExport={isLastAssistantInTurn(messages, i) ? exportReport : undefined}
+                                                       onRegenerate={!isRunning && msg.id === lastAssistantId ? () => handleRegenerate(msg.id) : undefined} />;
               if (msg.role === "tool-result") return (
                 <ToolResultRow
                   key={msg.id}
@@ -3074,7 +3163,8 @@ export default function App() {
                 </div>
               );
               return null;
-            })}
+            });
+            })()}
             {isRunning && !messages.some(m => m.streaming) && (
               <div className="msg-assistant">
                 <img src={lexiLogo} className="assistant-avatar" alt="Lexi" />

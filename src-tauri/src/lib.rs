@@ -430,6 +430,28 @@ fn load_conversation(
     Ok(LoadedConversation { display: conv.display, attachments, missing_attachments })
 }
 
+/// Current length of the backend wire history. The frontend stamps this on each user message as its
+/// `wireBase` so an edit/regenerate can later truncate the wire back to exactly that point — a
+/// robust anchor that a display-side message count is not, since internal nudges append extra
+/// `user` messages to the wire that never appear in the display.
+#[tauri::command]
+fn conversation_len(state: State<'_, AppState>) -> usize {
+    state.conversation.lock().unwrap().len()
+}
+
+#[derive(Deserialize)]
+pub struct TruncateArgs { pub len: usize }
+
+/// Truncate the wire history to `len`, dropping that turn and everything after it. Edit and
+/// regenerate call this with a user message's `wireBase`, then re-send — so the model re-runs from
+/// exactly the right point with full-fidelity history (real tool calls and results) before it.
+#[tauri::command]
+fn truncate_conversation(args: TruncateArgs, state: State<'_, AppState>) -> Result<(), String> {
+    let mut conv = state.conversation.lock().unwrap();
+    if args.len <= conv.len() { conv.truncate(args.len); }
+    Ok(())
+}
+
 #[tauri::command]
 fn delete_conversation(
     args: ConversationIdArgs,
@@ -2694,6 +2716,8 @@ pub fn run() {
             list_conversations,
             save_active_conversation,
             load_conversation,
+            conversation_len,
+            truncate_conversation,
             get_wiki_graph,
             read_wiki_page,
             delete_wiki_page,
