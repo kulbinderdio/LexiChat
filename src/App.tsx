@@ -53,6 +53,24 @@ interface ChatMessage {
   fullTruncated?: boolean;   // true if even fullResult hit the display cap
 }
 
+// A conversation autosaved mid-stream (e.g. the app was interrupted, or Stop landed between saves)
+// can carry transient run state on its messages — `streaming`/`status`. On reopen nothing will ever
+// finish those messages, so the flags would render eternal "thinking" dots. Clear them on load, and
+// drop an assistant message that was interrupted with nothing renderable to show (it would otherwise
+// be a blank bubble). Saves are also stripped of these fields (see saveActiveConversation), so this
+// is mostly a repair for conversations saved before that.
+export function sanitizeLoadedMessages(msgs: ChatMessage[]): ChatMessage[] {
+  const isDeadStream = (m: ChatMessage) =>
+    m.role === "assistant" && !m.text
+    && !(m.toolCalls && m.toolCalls.length)
+    && !(m.toolImages && m.toolImages.length)
+    && !(m.imageDataUrls && m.imageDataUrls.length)
+    && !m.artifact && !m.ui && !(m.savePrompt && m.savePrompt.length);
+  return msgs
+    .filter(m => !isDeadStream(m))
+    .map(m => (m.streaming || m.status) ? { ...m, streaming: undefined, status: undefined } : m);
+}
+
 // MCP servers approved to render/interact with apps this session (frontend mirror
 // of the backend apps_allowed set; gates iframe mounting).
 const approvedMcpApps = new Set<string>();
@@ -1970,7 +1988,10 @@ export default function App() {
     try {
       const meta = await invoke<ConversationMeta>("save_active_conversation", {
         args: {
-          display: msgs.map(m => m.fullResult ? { ...m, fullResult: undefined } : m),
+          // Strip transient/non-persisted fields: fullResult (huge, connector-only), and the
+          // streaming/status run state — persisting streaming:true is what caused reopened chats
+          // to show eternal "thinking" dots.
+          display: msgs.map(m => ({ ...m, fullResult: undefined, streaming: undefined, status: undefined })),
           profile_id: settings.activeProfileId ?? null,
           model: selectedModel,
           message_count: msgs.length,
@@ -2003,7 +2024,7 @@ export default function App() {
       const loaded = await invoke<{
         display: ChatMessage[]; attachments: string[]; missing_attachments: string[];
       }>("load_conversation", { args: { id } });
-      setMessages(Array.isArray(loaded.display) ? loaded.display : []);
+      setMessages(sanitizeLoadedMessages(Array.isArray(loaded.display) ? loaded.display : []));
       setActiveConversationId(id);
       // Restore the chat's attachment ledger so its photos stay editable. Rust has already
       // split off any file that is no longer on disk.
