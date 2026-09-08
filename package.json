@@ -1,7 +1,7 @@
 {
   "name": "tauri-app",
   "private": true,
-  "version": "2.4.22",
+  "version": "2.4.23",
   "type": "module",
   "scripts": {
     "prepare:pyodide": "node scripts/prepare-pyodide.mjs",
