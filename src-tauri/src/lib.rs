@@ -90,9 +90,13 @@ pub struct AppState {
     /// Id of the saved conversation the current chat maps to, so auto-save
     /// updates the same record. `None` = a fresh chat not yet persisted.
     pub active_conversation_id: Mutex<Option<String>>,
-    /// Set by `stop_generation` to cancel the running agent loop. Reset to false at the
-    /// start of each `send_message`. Checked between steps and while streaming tokens.
-    pub cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The current run's cancel token — a PER-RUN `Arc<AtomicBool>` held in a swappable slot, not
+    /// a single shared flag. Each `send_message` cancels the previous token and installs a fresh
+    /// one, so stopping a run and starting another can never revive the old run by resetting a
+    /// shared boolean (which is exactly what leaked a stopped run's answer into a new chat).
+    /// `stop_generation` and `reset_conversation` set the current token; the loop checks it between
+    /// steps and while streaming.
+    pub cancel: std::sync::Mutex<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Files `run_python` wrote to /work/out that couldn't be saved because no sandbox folder is
     /// configured. Stashed (name, bytes) while the user is asked to add a folder; written by
     /// `save_pending_outputs`. We never write outside the sandbox.
@@ -149,7 +153,7 @@ impl Default for AppState {
             apps_allowed: Mutex::new(std::collections::HashSet::new()),
             pending_app_approval: Mutex::new(None),
             active_conversation_id: Mutex::new(None),
-            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            cancel: std::sync::Mutex::new(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))),
             pending_output_files: Mutex::new(Vec::new()),
             code_tools_allowed: Mutex::new(false),
             debug_full_context: Mutex::new(false),
@@ -219,8 +223,8 @@ async fn set_backend(args: BackendArgs, state: State<'_, AppState>) -> Result<()
 #[tauri::command]
 async fn reset_conversation(state: State<'_, AppState>) -> Result<(), String> {
     // Cancel any in-flight run so its late events (e.g. a slow run_python) can't bleed into the
-    // fresh chat. send_message resets this to false when the next run starts.
-    state.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    // fresh chat. This cancels the CURRENT run's token; the next send_message installs its own.
+    state.cancel.lock().unwrap().store(true, std::sync::atomic::Ordering::SeqCst);
     state.conversation.lock().unwrap().clear();
     *state.active_conversation_id.lock().unwrap() = None;
     Ok(())
@@ -230,8 +234,22 @@ async fn reset_conversation(state: State<'_, AppState>) -> Result<(), String> {
 /// comes first, and emits `agent-done`. Conversation history is left intact.
 #[tauri::command]
 fn stop_generation(state: State<'_, AppState>) -> Result<(), String> {
-    state.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    state.cancel.lock().unwrap().store(true, std::sync::atomic::Ordering::SeqCst);
     Ok(())
+}
+
+/// Cancel the run token currently in `slot` and install a fresh, uncancelled one, returning it.
+/// The old token stays cancelled forever — that is the whole point: because each run holds a
+/// distinct token, a newly-started run can never revive a stopped one by clearing a shared flag
+/// (the bug that leaked a stopped run's answer into the next chat).
+fn supersede_run(slot: &std::sync::Mutex<std::sync::Arc<std::sync::atomic::AtomicBool>>)
+    -> std::sync::Arc<std::sync::atomic::AtomicBool>
+{
+    let mut g = slot.lock().unwrap();
+    g.store(true, std::sync::atomic::Ordering::SeqCst);
+    let fresh = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    *g = fresh.clone();
+    fresh
 }
 
 // ── Chat history commands ───────────────────────────────────────────────────────
@@ -577,9 +595,9 @@ async fn send_message(
         _ => state.backend.lock().unwrap().clone(),
     };
 
-    // Fresh run — clear any stop request left over from a previous turn.
-    state.cancel.store(false, std::sync::atomic::Ordering::SeqCst);
-    let cancel = state.cancel.clone();
+    // Supersede any previous run: cancel its (distinct) token and install a fresh one for this run,
+    // so a stopped run can't be revived by this new one and leak its answer into this chat.
+    let cancel = supersede_run(&state.cancel);
     // Reset the per-turn token accumulator (the stream parser sums into it; the frontend reads it
     // back via record_turn_usage when the turn ends).
     *state.turn_tokens.lock().unwrap() = (0, 0);
@@ -2700,4 +2718,30 @@ pub fn run() {
             }
             let _ = event; // suppress unused warning on non-mac
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::supersede_run;
+    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+
+    /// The invariant behind the stopped-run-leak fix: starting a run cancels the previous run's
+    /// token and hands the new run a fresh, independent one — and a stopped run is NEVER revived,
+    /// however many runs start afterwards.
+    #[test]
+    fn superseding_cancels_the_old_run_and_never_revives_it() {
+        let slot: Mutex<Arc<AtomicBool>> = Mutex::new(Arc::new(AtomicBool::new(false)));
+
+        let run_a = slot.lock().unwrap().clone(); // run A's token (currently active)
+        let run_b = supersede_run(&slot);         // run B starts, superseding A
+        assert!(run_a.load(SeqCst), "A is cancelled the moment B starts");
+        assert!(!run_b.load(SeqCst), "B starts uncancelled");
+
+        // Run C starts. The old bug reset a shared flag here, reviving A. It must not.
+        let run_c = supersede_run(&slot);
+        assert!(run_a.load(SeqCst), "A stays cancelled — a later run cannot revive it");
+        assert!(run_b.load(SeqCst), "B is now cancelled by C");
+        assert!(!run_c.load(SeqCst), "C is the live run");
+    }
 }

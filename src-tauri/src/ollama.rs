@@ -2871,7 +2871,9 @@ async fn dispatch_run_python<R: tauri::Runtime>(
     let py: Option<PyResult> = if silent {
         tokio::time::timeout(std::time::Duration::from_secs(300), &mut rx).await.ok().and_then(|r| r.ok())
     } else {
-        let cancel = state.cancel.clone();
+        // This run's cancel token (a clone of the current slot). If a newer run supersedes this
+        // one, it sets THIS token true, so a slow run_python aborts rather than outliving its chat.
+        let cancel = state.cancel.lock().unwrap().clone();
         let deadline = tokio::time::sleep(std::time::Duration::from_secs(300));
         tokio::pin!(deadline);
         loop {
