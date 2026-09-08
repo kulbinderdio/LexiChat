@@ -575,7 +575,9 @@ function UserMessage({ text, imageDataUrls, canEdit, onEdit }: {
   const save = () => {
     const t = draft.trim();
     setEditing(false);
-    if (t && t !== text) onEdit?.(t);
+    // Resubmit on any non-empty text — including unchanged text, which is a valid "re-run from
+    // here". Previously Save silently did nothing unless the text differed.
+    if (t) onEdit?.(t);
   };
   return (
     <div className="msg-user">
@@ -2306,9 +2308,13 @@ export default function App() {
     }).then(u => cleanup.push(u));
 
     listen<{ error: string | null }>("agent-done", e => {
-      if (!streamActive()) return;
+      // A completing run must ALWAYS release the running state, even if its stream was superseded —
+      // otherwise a dropped agent-done strands isRunning=true and every later send silently no-ops
+      // (send() and edit/regenerate both bail while running). Only the message mutations below are
+      // gated by streamActive, so a superseded run's output can't land in the now-visible chat.
       setIsRunning(false);
       setThinkingAt(null);
+      if (!streamActive()) return;
       // Record this turn's usage locally (backend merges in token counts). Best-effort, on-device.
       const t = turnTallyRef.current;
       if (t.start) {
