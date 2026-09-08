@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo, KeyboardEvent, ChangeEvent } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, KeyboardEvent, ChangeEvent, Component, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ReactMarkdown, { Components } from "react-markdown";
@@ -545,6 +545,22 @@ function CopyButton({ text }: { text: string }) {
       {copied ? "✓ Copied" : "⧉ Copy"}
     </button>
   );
+}
+
+// Isolates one message's render. Without this, an error rendering any single message (a malformed
+// artifact, tool result, or markdown in an old chat) unmounts the WHOLE app — the reported
+// "scrolled an old chat and it went blank". Now a bad message shows a placeholder and the rest of
+// the conversation keeps working. The error is logged so the actual culprit can be found.
+class MessageErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(err: unknown, info: unknown) { console.error("[message-render] failed:", err, info); }
+  render() {
+    if (this.state.failed) {
+      return <div className="msg-error">⚠ This message couldn’t be displayed. The rest of the chat is unaffected.</div>;
+    }
+    return this.props.children;
+  }
 }
 
 // ── Message bubbles ───────────────────────────────────────────────────────────
@@ -2995,14 +3011,18 @@ export default function App() {
   const handleProfileChange = async (id: string) => {
     const profile = settings.profiles.find(p => p.id === id) ?? null;
     const updated = { ...settings, activeProfileId: id || null };
+    // Clear the chat FIRST. Previously the reset ran last, after `syncServers` — which is slow when
+    // it drops/reconnects MCP servers (e.g. docker-backed ones) — so a prompt sent during the
+    // switch got wiped by the trailing reset, snapping the view back to the new-chat state.
+    await handleReset();
+    // handleSaveSettings persists, syncs servers for the new profile, and applies its model — so
+    // there's no separate syncServers call here (it used to run twice).
     await handleSaveSettings(updated);
     if (profile?.model) {
       const srv = serverForModel(updated.servers ?? [], profile.serverId, profile.model);
       if (srv && (srv.models ?? []).includes(profile.model)) { setSelectedServerId(srv.id); setSelectedModel(profile.model); }
     }
     setChatParams(profile?.chatParams ?? updated.chatParams ?? DEFAULT_CHAT_PARAMS);
-    await syncServers(updated);
-    await handleReset();
   };
   chatParamsRef.current = chatParams;
   profileSwitchRef.current = handleProfileChange;
@@ -3132,15 +3152,17 @@ export default function App() {
               // discarding nothing after it). Edit is offered on any user message with a checkpoint.
               const lastAssistantId = [...messages].reverse().find(m => m.role === "assistant")?.id;
               return messages.map((msg, i) => {
-              if (msg.role === "user")        return <UserMessage key={msg.id} text={msg.text} imageDataUrls={msg.imageDataUrls}
+              // Each message renders inside its own boundary, so one that throws shows a placeholder
+              // instead of blanking the whole app (see MessageErrorBoundary).
+              let el: ReactNode = null;
+              if (msg.role === "user")        el = <UserMessage text={msg.text} imageDataUrls={msg.imageDataUrls}
                                                        canEdit={!isRunning && msg.wireBase != null}
                                                        onEdit={t => handleEditUserMessage(msg.id, t)} />;
-              if (msg.role === "assistant")   return <AssistantMessage key={msg.id} msg={msg} thinkingAt={thinkingAt}
+              else if (msg.role === "assistant")   el = <AssistantMessage msg={msg} thinkingAt={thinkingAt}
                                                        onExport={isLastAssistantInTurn(messages, i) ? exportReport : undefined}
                                                        onRegenerate={!isRunning && msg.id === lastAssistantId ? () => handleRegenerate(msg.id) : undefined} />;
-              if (msg.role === "tool-result") return (
+              else if (msg.role === "tool-result") el = (
                 <ToolResultRow
-                  key={msg.id}
                   name={msg.toolName ?? ""}
                   result={msg.text}
                   args={msg.toolArgs}
@@ -3153,16 +3175,16 @@ export default function App() {
                   onAttach={(path, prompt) => { setAttachedFiles([path]); setInput(prompt); }}
                 />
               );
-              if (msg.role === "error")       return <div key={msg.id} className="msg-error">⚠ {msg.text}</div>;
-              if (msg.role === "notice")      return (
-                <div key={msg.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, opacity: 0.75, fontStyle: "italic", padding: "4px 8px" }}>
+              else if (msg.role === "error")       el = <div className="msg-error">⚠ {msg.text}</div>;
+              else if (msg.role === "notice")      el = (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, opacity: 0.75, fontStyle: "italic", padding: "4px 8px" }}>
                   <span>ℹ {msg.text}</span>
                   {msg.savePrompt && (
                     <button className="copy-btn" style={{ fontStyle: "normal" }} onClick={() => saveOutputFiles(msg.id)}>💾 Save…</button>
                   )}
                 </div>
               );
-              return null;
+              return el && <MessageErrorBoundary key={msg.id}>{el}</MessageErrorBoundary>;
             });
             })()}
             {isRunning && !messages.some(m => m.streaming) && (
